@@ -1,0 +1,13 @@
+alpha: 0.1
+seed: 42
+n_members: 5
+splits:
+  - random
+  - scaffold
+  - chemical_class
+  - species
+  - temporal
+  - hard_ood
+models:
+  - lightgbm
+  - random_forest

@@ -1,0 +1,52 @@
+[build-system]
+requires = ["setuptools>=68", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "ecoood"
+version = "0.1.0"
+description = "Reliability assessment and screening-action benchmark for aquatic ecotoxicity prediction."
+readme = "README.md"
+requires-python = ">=3.11"
+license = {file = "LICENSE"}
+dependencies = [
+  "joblib>=1.4",
+  "beautifulsoup4>=4.12",
+  "lightgbm>=4.0",
+  "matplotlib>=3.8",
+  "networkx>=3.2",
+  "numpy>=1.26",
+  "openpyxl>=3.1",
+  "pandas>=2.2",
+  "pyarrow>=16.0",
+  "pyyaml>=6.0",
+  "requests>=2.32",
+  "scikit-learn>=1.5",
+  "scipy>=1.13",
+  "seaborn>=0.13",
+  "xgboost>=2.0",
+]
+
+[project.optional-dependencies]
+chem = ["rdkit>=2024.9"]
+dev = ["pytest>=8.0"]
+figures = [
+  "rdkit>=2024.3",
+  "svgutils>=0.3.4",
+  "cairosvg>=2.9",
+]
+ui = [
+  "streamlit>=1.56",
+  "plotly>=6.7",
+]
+
+[project.urls]
+Homepage = "https://github.com/bubaizhanshen/EcoOOD"
+Repository = "https://github.com/bubaizhanshen/EcoOOD"
+Issues = "https://github.com/bubaizhanshen/EcoOOD/issues"
+
+[tool.setuptools]
+package-dir = {"" = "src"}
+
+[tool.setuptools.packages.find]
+where = ["src"]
