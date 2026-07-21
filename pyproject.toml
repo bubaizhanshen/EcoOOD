@@ -21,6 +21,7 @@ dependencies = [
   "pyarrow>=16.0",
   "pyyaml>=6.0",
   "requests>=2.32",
+  "rdkit>=2024.9",
   "scikit-learn>=1.5",
   "scipy>=1.13",
   "seaborn>=0.13",
@@ -28,10 +29,8 @@ dependencies = [
 ]
 
 [project.optional-dependencies]
-chem = ["rdkit>=2024.9"]
 dev = ["pytest>=8.0"]
 figures = [
-  "rdkit>=2024.3",
   "svgutils>=0.3.4",
   "cairosvg>=2.9",
 ]

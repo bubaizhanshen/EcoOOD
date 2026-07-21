@@ -42,14 +42,14 @@ def _toy_predictions() -> pd.DataFrame:
     return pd.DataFrame(rows)
 
 
-def test_aggregate_species_distribution_builds_hc5_proxy():
+def test_aggregate_species_distribution_builds_lower_tail_summary():
     panel = aggregate_species_distribution(_toy_predictions(), min_species=5)
 
     assert len(panel) == 2
     assert set(panel["chemical_id"]) == {"chem_a", "chem_b"}
     assert panel["n_species"].tolist() == [5, 5]
     chem_b = panel.loc[panel["chemical_id"] == "chem_b"].iloc[0]
-    assert chem_b["hc5_proxy_abs_error"] > 1.0
+    assert chem_b["species_q05_abs_error"] > 1.0
 
 
 def test_apply_downstream_gate_withholds_high_ood_proxy():

@@ -19,21 +19,21 @@ POLICY_CLASS_ORDER = [
     "Pharmaceutical Personal Care Products (PPCPs)",
 ]
 ACTION_ORDER = [
-    "testing_required",
-    "false_reassurance_warning",
-    "reliable_screening_concern",
+    "prioritize_testing",
+    "withhold_review",
+    "screen_now",
     "lower_priority",
 ]
 ACTION_LABELS = {
-    "testing_required": "Testing required",
-    "false_reassurance_warning": "False-reassurance warning",
-    "reliable_screening_concern": "Reliable screening concern",
+    "prioritize_testing": "Prioritize testing",
+    "withhold_review": "Withhold/review",
+    "screen_now": "Screen now",
     "lower_priority": "Lower priority",
 }
 ACTION_COLORS = {
-    "testing_required": PALETTE["red"],
-    "false_reassurance_warning": PALETTE["orange"],
-    "reliable_screening_concern": PALETTE["green"],
+    "prioritize_testing": PALETTE["red"],
+    "withhold_review": PALETTE["orange"],
+    "screen_now": PALETTE["green"],
     "lower_priority": "#BFB8AE",
 }
 
@@ -85,11 +85,11 @@ def _aggregate_panel(predictions: pd.DataFrame) -> tuple[pd.DataFrame, float, fl
 
     def classify(row: pd.Series) -> str:
         if row["min_pred_tox"] <= tox_cutoff and row["max_ecoood"] >= ood_cutoff:
-            return "testing_required"
+            return "prioritize_testing"
         if row["min_pred_tox"] > tox_cutoff and row["max_ecoood"] >= ood_cutoff:
-            return "false_reassurance_warning"
+            return "withhold_review"
         if row["min_pred_tox"] <= tox_cutoff and row["max_ecoood"] < ood_cutoff:
-            return "reliable_screening_concern"
+            return "screen_now"
         return "lower_priority"
 
     chemical_panel["screening_action"] = chemical_panel.apply(classify, axis=1)
@@ -98,26 +98,21 @@ def _aggregate_panel(predictions: pd.DataFrame) -> tuple[pd.DataFrame, float, fl
 
 
 def _representative_examples(chemical_panel: pd.DataFrame) -> pd.DataFrame:
-    top_testing = chemical_panel[chemical_panel["screening_action"] == "testing_required"].copy()
+    top_testing = chemical_panel[chemical_panel["screening_action"] == "prioritize_testing"].copy()
     top_testing = top_testing.sort_values(["max_ecoood", "min_pred_tox"], ascending=[False, True]).head(4)
-    top_testing["label"] = [
-        "Conazole A",
-        "PFAS amide",
-        "Neonicotinoid",
-        "Conazole B",
-    ][: len(top_testing)]
+    top_testing["label"] = top_testing["chemical_name"].astype(str)
 
-    top_false = chemical_panel[chemical_panel["screening_action"] == "false_reassurance_warning"].copy()
+    top_false = chemical_panel[chemical_panel["screening_action"] == "withhold_review"].copy()
     false_examples = []
-    for class_name, label in [
-        ("Per- and Polyfluoroalkyl Substances (PFAS)", "PFAS temporal proxy"),
-        ("Neonicotinoids", "Neonicotinoid warning"),
+    for class_name in [
+        "Per- and Polyfluoroalkyl Substances (PFAS)",
+        "Neonicotinoids",
     ]:
         subset = top_false[top_false["primary_class"] == class_name].copy()
         if subset.empty:
             continue
         subset = subset.sort_values(["later_year_rows", "max_ecoood"], ascending=[False, False]).head(1)
-        subset["label"] = label
+        subset["label"] = subset["chemical_name"].astype(str)
         false_examples.append(subset)
     top_false = pd.concat(false_examples, ignore_index=True) if false_examples else top_false.head(0)
 
@@ -174,10 +169,10 @@ def _plot_screening_panel(
 
     ax.axvline(tox_cutoff, color=PALETTE["ink"], linestyle="--", linewidth=0.9)
     ax.axhline(ood_cutoff, color=PALETTE["ink"], linestyle="--", linewidth=0.9)
-    ax.text(0.02, 0.10, "Reliable screening\nconcern", transform=ax.transAxes, color=PALETTE["green"], fontsize=7.1)
+    ax.text(0.02, 0.10, "Screen now", transform=ax.transAxes, color=PALETTE["green"], fontsize=7.1)
     ax.text(0.60, 0.10, "Lower priority", transform=ax.transAxes, color=PALETTE["slate"], fontsize=7.1)
-    ax.text(0.60, 0.86, "False-reassurance\nwarning", transform=ax.transAxes, color=PALETTE["orange"], fontsize=7.1)
-    ax.text(0.02, 0.86, "Testing required", transform=ax.transAxes, color=PALETTE["red"], fontsize=7.1)
+    ax.text(0.60, 0.86, "Withhold/review", transform=ax.transAxes, color=PALETTE["orange"], fontsize=7.1)
+    ax.text(0.02, 0.86, "Prioritize testing", transform=ax.transAxes, color=PALETTE["red"], fontsize=7.1)
 
     for _, row in examples.iterrows():
         ax.text(
@@ -193,7 +188,7 @@ def _plot_screening_panel(
 
     ax.set_xlabel("Most toxic deployment prediction (log molar; left = more toxic)")
     ax.set_ylabel("Maximum EcoOOD score across deployment splits")
-    ax.set_title("Policy-relevant chemical panel", pad=6)
+    ax.set_title("Class-focused screening panel", pad=6)
     add_panel_label(ax, "A", x=-0.16, y=1.07)
     finish_axis(ax, grid_axis="both")
     ax.legend(loc="lower left", frameon=False, fontsize=6.8, ncol=2)
@@ -219,7 +214,7 @@ def _plot_screening_panel(
         left = left + vals
     ax.set_xlabel("Unique chemicals")
     ax.set_ylabel("")
-    ax.set_title("Action mix across policy-relevant classes", pad=6)
+    ax.set_title("Action mix across selected contaminant classes", pad=6)
     add_panel_label(ax, "B", x=-0.16, y=1.07)
     finish_axis(ax, grid_axis="x")
 
@@ -227,7 +222,7 @@ def _plot_screening_panel(
 
 
 def main() -> None:
-    parser = argparse.ArgumentParser(description="Generate a policy-relevant screening-panel add-on for EcoOOD.")
+    parser = argparse.ArgumentParser(description="Generate a class-focused screening-panel analysis for EcoOOD.")
     parser.add_argument(
         "--prediction-pool",
         type=Path,
@@ -244,9 +239,9 @@ def main() -> None:
     examples = _representative_examples(chemical_panel)
     counts = _action_counts(chemical_panel)
 
-    chemical_panel.to_csv(args.output_dir / "policy_relevant_screening_panel.csv", index=False)
-    counts.to_csv(args.output_dir / "policy_relevant_screening_action_counts.csv", index=False)
-    examples.to_csv(args.output_dir / "policy_relevant_screening_examples.csv", index=False)
+    chemical_panel.to_csv(args.output_dir / "class_focused_screening_panel.csv", index=False)
+    counts.to_csv(args.output_dir / "class_focused_screening_action_counts.csv", index=False)
+    examples.to_csv(args.output_dir / "class_focused_screening_examples.csv", index=False)
 
     summary = pd.DataFrame(
         [
@@ -254,14 +249,14 @@ def main() -> None:
                 "n_chemicals": int(len(chemical_panel)),
                 "toxicity_cutoff_q25": tox_cutoff,
                 "ood_cutoff_q75": ood_cutoff,
-                "testing_required": int((chemical_panel["screening_action"] == "testing_required").sum()),
-                "false_reassurance_warning": int((chemical_panel["screening_action"] == "false_reassurance_warning").sum()),
-                "reliable_screening_concern": int((chemical_panel["screening_action"] == "reliable_screening_concern").sum()),
+                "prioritize_testing": int((chemical_panel["screening_action"] == "prioritize_testing").sum()),
+                "withhold_review": int((chemical_panel["screening_action"] == "withhold_review").sum()),
+                "screen_now": int((chemical_panel["screening_action"] == "screen_now").sum()),
                 "lower_priority": int((chemical_panel["screening_action"] == "lower_priority").sum()),
             }
         ]
     )
-    summary.to_csv(args.output_dir / "policy_relevant_screening_summary.csv", index=False)
+    summary.to_csv(args.output_dir / "class_focused_screening_summary.csv", index=False)
 
     _plot_screening_panel(chemical_panel, examples, counts, tox_cutoff, ood_cutoff, args.output_dir)
 

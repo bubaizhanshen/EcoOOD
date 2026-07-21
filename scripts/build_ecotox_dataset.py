@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import argparse
 import csv
+import re
 import time
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from pathlib import Path
@@ -12,6 +13,7 @@ from zipfile import ZipFile
 import numpy as np
 import pandas as pd
 import requests
+from rdkit import Chem, rdBase
 
 from ecoood.dsstox import expand_source_paths, parse_clowder_zip_listing, resolve_chemical_index_from_sources
 from ecoood.invitrodb import INVITRODB_V43_BLOB_URL, attach_mechanistic_features, load_or_build_mechanistic_features
@@ -79,11 +81,9 @@ def exposure_hours(value: object, unit: object) -> float | None:
 def clean_concentration_unit(unit: object) -> str:
     if pd.isna(unit):
         return ""
-    text = str(unit).strip()
-    for prefix in ("AI ", "AE ", "T ", "TOT "):
-        if text.startswith(prefix):
-            text = text[len(prefix) :]
-    return text.strip().lower()
+    text = str(unit).strip().lower().replace("µ", "u").replace("μ", "u").replace("³", "3")
+    text = re.sub(r"^ai\s+", "", text)
+    return re.sub(r"\s+", "", text)
 
 
 def concentration_to_molar(value: object, unit: object, molecular_weight: object) -> float | None:
@@ -92,15 +92,15 @@ def concentration_to_molar(value: object, unit: object, molecular_weight: object
     except (TypeError, ValueError):
         return None
     unit_text = clean_concentration_unit(unit)
-    if unit_text in {"m", "mol/l"}:
+    if unit_text in {"m", "mol/l", "mol/dm3"}:
         return concentration if concentration > 0 else None
-    if unit_text in {"mm", "mmol/l"}:
+    if unit_text in {"mm", "mmol/l", "mmol/dm3"}:
         return concentration * 1e-3 if concentration > 0 else None
-    if unit_text in {"um", "umol/l"}:
+    if unit_text in {"um", "umol/l", "umol/dm3"}:
         return concentration * 1e-6 if concentration > 0 else None
-    if unit_text in {"nm", "nmol/l"}:
+    if unit_text in {"nm", "nmol/l", "nmol/dm3"}:
         return concentration * 1e-9 if concentration > 0 else None
-    if unit_text in {"pm", "pmol/l"}:
+    if unit_text in {"pm", "pmol/l", "pmol/dm3"}:
         return concentration * 1e-12 if concentration > 0 else None
     try:
         mw = float(molecular_weight)
@@ -110,9 +110,15 @@ def concentration_to_molar(value: object, unit: object, molecular_weight: object
         return None
     grams_per_liter: dict[str, float] = {
         "g/l": 1.0,
+        "mg/ml": 1.0,
         "mg/l": 1e-3,
+        "mg/dm3": 1e-3,
+        "ug/ml": 1e-3,
         "ug/l": 1e-6,
+        "ug/dm3": 1e-6,
+        "ng/ml": 1e-6,
         "ng/l": 1e-9,
+        "pg/ml": 1e-9,
         "pg/l": 1e-12,
         "ppm": 1e-3,
         "ppb": 1e-6,
@@ -268,8 +274,12 @@ def hard_ood_flag(row: pd.Series) -> bool:
         return True
     if any(token in name for token in ["mixture", "unknown", "inorganic", "organomet", "salt"]):
         return True
-    if not row.get("smiles"):
+    smiles = str(row.get("smiles", "")).strip()
+    if not smiles:
         return True
+    with rdBase.BlockLogs():
+        if Chem.MolFromSmiles(smiles) is None:
+            return True
     return False
 
 
@@ -508,7 +518,7 @@ def main() -> None:
         "--mechanism-cache",
         type=Path,
         default=Path("data/processed/invitrodb_mechanism_features.csv"),
-        help="CSV cache for invitrodb-derived mechanism features.",
+        help="CSV cache for invitrodb-derived bioactivity-proxy features.",
     )
     parser.add_argument(
         "--invitrodb-summary",
@@ -525,7 +535,7 @@ def main() -> None:
     parser.add_argument(
         "--skip-mechanism",
         action="store_true",
-        help="Skip invitrodb-derived mechanism features.",
+        help="Skip invitrodb-derived bioactivity-proxy features.",
     )
     parser.add_argument("--output", type=Path, default=Path("data/processed/ecotox_acute_ecoood.csv"))
     parser.add_argument("--structured-output", type=Path, default=Path("data/processed/ecotox_acute_ecoood_structured.csv"))

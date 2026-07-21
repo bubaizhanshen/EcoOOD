@@ -3,7 +3,15 @@ from __future__ import annotations
 import numpy as np
 from scipy import sparse
 
-from ecoood.models import BootstrapEnsembleRegressor
+from ecoood.models import BootstrapEnsembleRegressor, make_estimator
+
+
+def test_lightgbm_row_subsampling_is_enabled_when_available() -> None:
+    estimator = make_estimator("lightgbm", seed=123)
+    if estimator.__class__.__name__ == "LGBMRegressor":
+        params = estimator.get_params()
+        assert params["subsample"] == 0.9
+        assert params["subsample_freq"] == 1
 
 
 def test_mlp_ensemble_handles_sparse_inputs() -> None:

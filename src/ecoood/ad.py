@@ -3,12 +3,38 @@ from __future__ import annotations
 from dataclasses import dataclass
 
 import numpy as np
+from scipy import sparse
 from sklearn.ensemble import IsolationForest
 from sklearn.neighbors import LocalOutlierFactor
 from sklearn.preprocessing import StandardScaler
 
 from .features import FeatureBundle
 from .ood import _mahalanobis_scores, _mean_knn_distance
+
+
+def _tanimoto_novelty(train, query, chunk_size: int = 256) -> np.ndarray:
+    """Return 1 - maximum training-set Tanimoto similarity for binary fingerprints."""
+    train_csr = sparse.csr_matrix(train, dtype=np.float32)
+    query_csr = sparse.csr_matrix(query, dtype=np.float32)
+    if train_csr.shape[0] == 0:
+        return np.ones(query_csr.shape[0], dtype=float)
+
+    train_counts = np.asarray(train_csr.sum(axis=1)).ravel()
+    novelty = np.empty(query_csr.shape[0], dtype=float)
+    for start in range(0, query_csr.shape[0], chunk_size):
+        stop = min(start + chunk_size, query_csr.shape[0])
+        block = query_csr[start:stop]
+        intersections = (block @ train_csr.T).toarray()
+        query_counts = np.asarray(block.sum(axis=1)).ravel()
+        unions = query_counts[:, None] + train_counts[None, :] - intersections
+        similarities = np.divide(
+            intersections,
+            unions,
+            out=np.zeros_like(intersections, dtype=float),
+            where=unions > 0,
+        )
+        novelty[start:stop] = 1.0 - similarities.max(axis=1)
+    return novelty
 
 
 @dataclass
@@ -48,11 +74,17 @@ class ApplicabilityDomainScorer:
 
     @staticmethod
     def _stack_dense(bundle: FeatureBundle) -> np.ndarray:
+        def _as_dense(block) -> np.ndarray:
+            if sparse is not None and sparse.issparse(block):
+                return block.toarray()
+            return np.asarray(block, dtype=float)
+
+        # Taxonomic one-hot support is scored separately by EcoOOD; generic dense
+        # baselines use the continuous descriptor, context, and bioactivity blocks.
         blocks = [
-            np.asarray(bundle.descriptor, dtype=float),
-            np.asarray(bundle.species, dtype=float),
-            np.asarray(bundle.context, dtype=float),
-            np.asarray(bundle.mechanism, dtype=float),
+            _as_dense(bundle.descriptor),
+            _as_dense(bundle.context),
+            _as_dense(bundle.mechanism),
         ]
         dense = np.hstack(blocks)
         if dense.ndim == 1:
@@ -118,10 +150,14 @@ class ApplicabilityDomainScorer:
         if descriptor.ndim == 1:
             descriptor = descriptor.reshape(-1, 1)
         dense = self._stack_dense(bundle)
-        similarity = _mean_knn_distance(self.train_bundle.fingerprint, bundle.fingerprint, metric="cosine")
+        similarity = _tanimoto_novelty(self.train_bundle.fingerprint, bundle.fingerprint)
         leverage = self._leverage_score(descriptor)
         descriptor_range = self._descriptor_range_score(descriptor)
-        distance_to_model = np.asarray(model_std, dtype=float)
+        distance_to_model = _mean_knn_distance(
+            self.train_bundle.full,
+            bundle.full,
+            metric="euclidean",
+        )
         interval_width_arr = (
             np.asarray(interval_width, dtype=float)
             if interval_width is not None

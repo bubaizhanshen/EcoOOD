@@ -93,7 +93,10 @@ def _normalize_column(name: str) -> str:
 def normalize_casrn(value: object) -> str:
     if value is None or pd.isna(value):
         return ""
-    return re.sub(r"[^0-9]+", "", str(value))
+    text = str(value).strip()
+    if re.fullmatch(r"\d+\.0+", text):
+        text = text.split(".", maxsplit=1)[0]
+    return re.sub(r"[^0-9]+", "", text)
 
 
 def resolve_dsstox_columns(columns: Iterable[str]) -> dict[str, str]:

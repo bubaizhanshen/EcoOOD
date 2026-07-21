@@ -33,7 +33,7 @@ PROFILE_LABELS = {
     "chemical_only": "Chemical",
     "chemical_species": "Chemical +\nSpecies",
     "chemical_species_context": "Chemical + Species\n+ Context",
-    "chemical_species_context_mechanism": "Chemical + Species\n+ Context + Mechanism",
+    "chemical_species_context_mechanism": "Chemical + Species\n+ Context + Bioactivity proxy",
 }
 SPLIT_ORDER = ["temporal", "species", "chemical_class"]
 SPLIT_LABELS = {
@@ -71,7 +71,11 @@ def _profile_columns(df: pd.DataFrame, profile: str, schema: EcoOODSchema) -> li
         schema.trophic_group,
     }
     context_cols = {
+        schema.duration_h,
         schema.medium,
+        schema.temperature_c,
+        schema.ph,
+        schema.study_year,
         schema.source,
         *(col for col in df.columns if col.startswith("ctx_")),
     }
@@ -152,7 +156,7 @@ def main() -> None:
     parser.add_argument("--models", nargs="+", default=["lightgbm"])
     parser.add_argument("--seeds", nargs="+", type=int, default=[40, 41, 42, 43, 44])
     parser.add_argument("--alpha", type=float, default=0.1)
-    parser.add_argument("--members", type=int, default=3)
+    parser.add_argument("--members", type=int, default=5)
     parser.add_argument("--output-dir", type=Path, default=Path("outputs/axis_ablation"))
     args = parser.parse_args()
     apply_publication_style()

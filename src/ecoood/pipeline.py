@@ -33,10 +33,11 @@ def _select(df: pd.DataFrame, idx: np.ndarray) -> pd.DataFrame:
 
 
 def _known_ood_labels(df_test: pd.DataFrame, split_indices: SplitIndices, schema: EcoOODSchema) -> np.ndarray:
-    if schema.known_ood in df_test.columns:
-        return df_test[schema.known_ood].fillna(False).astype(bool).to_numpy()
-    if schema.hard_ood in df_test.columns and split_indices.split_name == "hard_ood":
-        return df_test[schema.hard_ood].fillna(False).astype(bool).to_numpy()
+    if split_indices.split_name == "hard_ood":
+        if schema.known_ood in df_test.columns:
+            return df_test[schema.known_ood].fillna(False).astype(bool).to_numpy()
+        if schema.hard_ood in df_test.columns:
+            return df_test[schema.hard_ood].fillna(False).astype(bool).to_numpy()
     return split_indices.test_is_ood
 
 

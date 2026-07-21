@@ -313,7 +313,7 @@ with tab_decision:
             detail = filtered[filtered["chemical_name"] == selected].copy()
             axis_df = pd.DataFrame(
                 {
-                    "Axis": ["Chemical", "Species", "Context", "Mechanism"],
+                    "Axis": ["Chemical", "Species", "Context", "Bioactivity proxy"],
                     "Novelty": [
                         detail["d_chem"].mean(),
                         detail["d_species"].mean(),

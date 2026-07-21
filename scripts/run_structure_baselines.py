@@ -142,7 +142,7 @@ def main() -> None:
     parser.add_argument("--models", nargs="+", default=MODEL_ORDER)
     parser.add_argument("--seeds", nargs="+", type=int, default=[40, 41, 42, 43, 44])
     parser.add_argument("--alpha", type=float, default=0.1)
-    parser.add_argument("--members", type=int, default=3)
+    parser.add_argument("--members", type=int, default=5)
     parser.add_argument("--output-dir", type=Path, default=Path("outputs/structure_baselines"))
     args = parser.parse_args()
 

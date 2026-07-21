@@ -25,7 +25,7 @@ PROFILE_LABELS = {
     "chemical_only": "Chemical",
     "chemical_species": "Chemical +\nSpecies",
     "chemical_species_context": "Chemical + Species\n+ Context",
-    "chemical_species_context_mechanism": "Chemical + Species\n+ Context + Mechanism",
+    "chemical_species_context_mechanism": "Chemical + Species\n+ Context + Bioactivity proxy",
     "current_full": "Current\nfull model",
 }
 SPLIT_ORDER = ["temporal", "species", "chemical_class"]

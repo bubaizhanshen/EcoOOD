@@ -13,9 +13,11 @@ import pandas as pd
 import requests
 from bs4 import BeautifulSoup
 
+from ecoood.dsstox import normalize_casrn
+
 
 ROOT = Path(__file__).resolve().parents[1]
-DEFAULT_INPUT = ROOT / "results" / "external_regulatory_prep" / "pmra_high_priority_chemicals.csv"
+DEFAULT_INPUT = ROOT / "results" / "external_regulatory_prep" / "pmra_external_candidate_chemicals.csv"
 DEFAULT_OUT_DIR = ROOT / "results" / "external_regulatory_prep" / "echa_pmra_external"
 
 ECHEM_BASE = "https://www.echemportal.org/echemportal/"
@@ -59,7 +61,8 @@ TARGETS = {
 def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(
         description=(
-            "Build a regulator-adjacent external exact-row set from PMRA high-priority chemicals "
+            "Recover exact aquatic toxicity study rows for independent, multi-endpoint PMRA "
+            "candidate chemicals "
             "using eChemPortal substance/property search and ECHA CHEM dossier static pages."
         )
     )
@@ -101,7 +104,8 @@ def load_candidates(path: Path, limit: int | None) -> pd.DataFrame:
     df = df[cols].drop_duplicates().reset_index(drop=True)
     df = df.rename(columns={"representative_casrn": "casrn"})
     df["casrn"] = df["casrn"].fillna("").astype(str).str.strip()
-    df = df[df["casrn"].ne("")].copy()
+    df["casrn_normalized"] = df["casrn"].map(normalize_casrn)
+    df = df[df["casrn_normalized"].ne("")].copy()
     if limit is not None:
         df = df.head(limit).copy()
     return df.reset_index(drop=True)
@@ -438,7 +442,7 @@ def main() -> None:
     dossier_cache = ensure_dir(cache_dir / "dossier_index")
     document_cache = ensure_dir(cache_dir / "documents")
 
-    write_status(out_dir, "Loading PMRA high-priority chemicals.")
+    write_status(out_dir, "Loading independent multi-endpoint PMRA candidates.")
     candidates = load_candidates(args.input, args.limit)
 
     session = requests.Session()

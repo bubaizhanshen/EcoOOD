@@ -78,16 +78,16 @@ def aggregate_species_distribution(predictions: pd.DataFrame, min_species: int =
         )
         .agg(
             n_species=("species", "nunique"),
-            hc5_proxy_true=("species_true_tox", lambda s: float(pd.Series(s).quantile(0.05))),
-            hc5_proxy_pred=("species_pred_tox", lambda s: float(pd.Series(s).quantile(0.05))),
+            species_q05_true=("species_true_tox", lambda s: float(pd.Series(s).quantile(0.05))),
+            species_q05_pred=("species_pred_tox", lambda s: float(pd.Series(s).quantile(0.05))),
             max_ecoood=("species_max_ecoood", "max"),
             median_interval_width=("species_median_interval", "median"),
         )
     )
 
     chemical_panel = chemical_panel[chemical_panel["n_species"] >= min_species].copy()
-    chemical_panel["hc5_proxy_abs_error"] = (
-        chemical_panel["hc5_proxy_pred"] - chemical_panel["hc5_proxy_true"]
+    chemical_panel["species_q05_abs_error"] = (
+        chemical_panel["species_q05_pred"] - chemical_panel["species_q05_true"]
     ).abs()
     return chemical_panel
 
@@ -112,9 +112,9 @@ def apply_downstream_gate(chemical_panel: pd.DataFrame) -> tuple[pd.DataFrame, f
         lambda x: "deployment_like" if x in DEPLOYMENT_PROXY_SPLITS else "reference"
     )
     pooled_high_error_cutoff = float(
-        gated.loc[gated["panel_family"] == "deployment_like", "hc5_proxy_abs_error"].quantile(0.75)
+        gated.loc[gated["panel_family"] == "deployment_like", "species_q05_abs_error"].quantile(0.75)
     )
-    gated["downstream_high_error"] = gated["hc5_proxy_abs_error"] >= pooled_high_error_cutoff
+    gated["downstream_high_error"] = gated["species_q05_abs_error"] >= pooled_high_error_cutoff
     return gated, pooled_high_error_cutoff
 
 
@@ -142,13 +142,13 @@ def summarize_downstream_proxy(
                 "n_withhold": int((split_frame["gate_action"] == "withhold").sum()),
                 "mean_species_per_chemical": float(split_frame["n_species"].mean()),
                 "pooled_high_error_cutoff": pooled_high_error_cutoff,
-                "mean_abs_error_all": float(split_frame["hc5_proxy_abs_error"].mean()),
-                "median_abs_error_all": float(split_frame["hc5_proxy_abs_error"].median()),
+                "mean_abs_error_all": float(split_frame["species_q05_abs_error"].mean()),
+                "median_abs_error_all": float(split_frame["species_q05_abs_error"].median()),
                 "mean_abs_error_propagate": float(
-                    split_frame.loc[split_frame["gate_action"] == "propagate", "hc5_proxy_abs_error"].mean()
+                    split_frame.loc[split_frame["gate_action"] == "propagate", "species_q05_abs_error"].mean()
                 ),
                 "mean_abs_error_withhold": float(
-                    split_frame.loc[split_frame["gate_action"] == "withhold", "hc5_proxy_abs_error"].mean()
+                    split_frame.loc[split_frame["gate_action"] == "withhold", "species_q05_abs_error"].mean()
                 ),
                 "high_error_rate_all": float(split_frame["downstream_high_error"].mean()),
                 "high_error_rate_propagate": float(
@@ -171,7 +171,7 @@ def summarize_downstream_proxy(
                         "panel_family": "deployment_like" if split_name == "pooled_deployment" else split_frame["panel_family"].iloc[0],
                         "gate_action": action_name,
                         "metric": "mean_abs_error",
-                        "value": float(action_frame["hc5_proxy_abs_error"].mean()),
+                        "value": float(action_frame["species_q05_abs_error"].mean()),
                         "n_chemicals": int(len(action_frame)),
                     },
                     {
@@ -192,7 +192,7 @@ def representative_examples(gated: pd.DataFrame, top_n: int = 6) -> pd.DataFrame
     deploy = gated[gated["panel_family"] == "deployment_like"].copy()
     examples = deploy[deploy["gate_action"] == "withhold"].copy()
     examples = examples.sort_values(
-        ["downstream_high_error", "hc5_proxy_abs_error", "max_ecoood"],
+        ["downstream_high_error", "species_q05_abs_error", "max_ecoood"],
         ascending=[False, False, False],
     ).head(top_n)
     return examples[
@@ -202,9 +202,9 @@ def representative_examples(gated: pd.DataFrame, top_n: int = 6) -> pd.DataFrame
             "casrn",
             "chemical_class",
             "n_species",
-            "hc5_proxy_true",
-            "hc5_proxy_pred",
-            "hc5_proxy_abs_error",
+            "species_q05_true",
+            "species_q05_pred",
+            "species_q05_abs_error",
             "max_ecoood",
             "median_interval_width",
             "gate_action",
@@ -232,8 +232,8 @@ def plot_downstream_proxy(gated: pd.DataFrame, metrics: pd.DataFrame, output_dir
     ax = axes[0]
     sns.scatterplot(
         data=deploy,
-        x="hc5_proxy_true",
-        y="hc5_proxy_pred",
+        x="species_q05_true",
+        y="species_q05_pred",
         hue="gate_action",
         style="split_label",
         palette=ACTION_COLORS,
@@ -244,12 +244,12 @@ def plot_downstream_proxy(gated: pd.DataFrame, metrics: pd.DataFrame, output_dir
         linewidth=0.5,
         ax=ax,
     )
-    lo = float(min(deploy["hc5_proxy_true"].min(), deploy["hc5_proxy_pred"].min()))
-    hi = float(max(deploy["hc5_proxy_true"].max(), deploy["hc5_proxy_pred"].max()))
+    lo = float(min(deploy["species_q05_true"].min(), deploy["species_q05_pred"].min()))
+    hi = float(max(deploy["species_q05_true"].max(), deploy["species_q05_pred"].max()))
     ax.plot([lo, hi], [lo, hi], linestyle="--", linewidth=0.9, color=PALETTE["ink"])
-    ax.set_xlabel("Measured HC5-style proxy (log molar)")
-    ax.set_ylabel("Predicted HC5-style proxy")
-    ax.set_title("A  Downstream hazard proxy", pad=6, loc="left")
+    ax.set_xlabel("Measured species-level 5th percentile (log molar)")
+    ax.set_ylabel("Predicted species-level 5th percentile")
+    ax.set_title("A  Lower-tail cross-species summary", pad=6, loc="left")
     add_panel_label(ax, "A")
     finish_axis(ax, grid_axis="both")
     ax.legend(loc="lower right", fontsize=6.6, title="")
@@ -266,7 +266,7 @@ def plot_downstream_proxy(gated: pd.DataFrame, metrics: pd.DataFrame, output_dir
         ax=ax,
     )
     ax.set_xlabel("")
-    ax.set_ylabel("Mean absolute HC5-style error")
+    ax.set_ylabel("Mean absolute lower-tail error")
     ax.set_title("B  Propagate vs withhold error", pad=6, loc="left")
     ax.tick_params(axis="x", rotation=20)
     add_panel_label(ax, "B")
@@ -300,7 +300,7 @@ def plot_downstream_proxy(gated: pd.DataFrame, metrics: pd.DataFrame, output_dir
 
 def main() -> None:
     parser = argparse.ArgumentParser(
-        description="Generate a downstream HC5-style hazard proxy add-on for EcoOOD."
+        description="Generate a retrospective lower-tail cross-species summary for EcoOOD."
     )
     parser.add_argument(
         "--structured-dir",
@@ -319,11 +319,11 @@ def main() -> None:
     summary, metrics = summarize_downstream_proxy(gated, pooled_high_error_cutoff)
     examples = representative_examples(gated)
 
-    chemical_panel.to_csv(args.output_dir / "downstream_hc5_proxy_panel.csv", index=False)
-    gated.to_csv(args.output_dir / "downstream_hc5_proxy_classified.csv", index=False)
-    summary.to_csv(args.output_dir / "downstream_hc5_proxy_summary.csv", index=False)
-    metrics.to_csv(args.output_dir / "downstream_hc5_proxy_metrics.csv", index=False)
-    examples.to_csv(args.output_dir / "downstream_hc5_proxy_examples.csv", index=False)
+    chemical_panel.to_csv(args.output_dir / "cross_species_lower_tail_panel.csv", index=False)
+    gated.to_csv(args.output_dir / "cross_species_lower_tail_classified.csv", index=False)
+    summary.to_csv(args.output_dir / "cross_species_lower_tail_summary.csv", index=False)
+    metrics.to_csv(args.output_dir / "cross_species_lower_tail_metrics.csv", index=False)
+    examples.to_csv(args.output_dir / "cross_species_lower_tail_examples.csv", index=False)
 
     plot_downstream_proxy(gated, metrics, args.output_dir)
 

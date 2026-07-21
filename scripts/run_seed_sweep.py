@@ -102,7 +102,7 @@ def main() -> None:
     parser.add_argument("--models", nargs="+", default=["lightgbm", "random_forest"])
     parser.add_argument("--seeds", nargs="+", type=int, default=[40, 41, 42, 43, 44])
     parser.add_argument("--alpha", type=float, default=0.1)
-    parser.add_argument("--members", type=int, default=3)
+    parser.add_argument("--members", type=int, default=5)
     parser.add_argument("--group-col", type=str, default=None, help="Optional column for endpoint-wise sweeps.")
     parser.add_argument("--min-group-rows", type=int, default=100)
     parser.add_argument("--output-dir", type=Path, default=Path("outputs/seed_sweep"))

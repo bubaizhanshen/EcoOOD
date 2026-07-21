@@ -64,7 +64,7 @@ SPLIT_COLORS = {
 METHOD_ORDER = ["ecoood", "ad_distance_to_model", "ad_similarity", "ad_leverage", "ad_range"]
 METHOD_LABELS = {
     "ecoood": "EcoOOD",
-    "ad_distance_to_model": "Distance-to-model",
+    "ad_distance_to_model": "Input-space kNN",
     "ad_similarity": "Similarity AD",
     "ad_leverage": "Leverage AD",
     "ad_range": "Range AD",
@@ -72,7 +72,7 @@ METHOD_LABELS = {
 GATE_METHOD_ORDER = ["ecoood", "distance_to_model", "similarity_ad"]
 GATE_METHOD_LABELS = {
     "ecoood": "EcoOOD",
-    "distance_to_model": "Distance-to-model",
+    "distance_to_model": "Input-space kNN",
     "similarity_ad": "Similarity AD",
 }
 MODEL_ORDER = ["random_forest", "lightgbm", "xgboost"]
@@ -101,7 +101,7 @@ PRIORITY_CASE_SPECS = [
 WORKFLOW_ORDER = ["baseline_only", "baseline_plus_gate"]
 WORKFLOW_LABELS = {
     "baseline_only": "Baseline only",
-    "baseline_plus_gate": "Baseline + EcoOOD gate",
+    "baseline_plus_gate": "Baseline + EcoOOD rule",
 }
 WORKFLOW_COLORS = {
     "baseline_only": PALETTE["slate"],
@@ -222,6 +222,83 @@ def route_threshold_profile(frame: pd.DataFrame) -> pd.DataFrame:
             }
         )
     return pd.DataFrame(rows)
+
+
+def figure_s5_threshold_sensitivity(
+    route_summary: pd.DataFrame,
+    sensitivity: pd.DataFrame,
+    output_dir: Path,
+) -> None:
+    fig, axes = plt.subplots(
+        1,
+        2,
+        figsize=(ACS_DOUBLE_WIDTH, 2.8),
+        gridspec_kw={"width_ratios": [0.95, 1.05]},
+        constrained_layout=True,
+    )
+
+    route_mix = route_summary.set_index("profile").loc[
+        ["relaxed", "baseline", "strict"],
+        [
+            "screen_now_fraction",
+            "lower_priority_fraction",
+            "withhold_review_fraction",
+            "prioritize_testing_fraction",
+        ],
+    ]
+    route_keys = [
+        "actionable_high_tox",
+        "lower_priority",
+        "withhold_review_low_tox",
+        "prioritize_testing",
+    ]
+    bottom = np.zeros(len(route_mix), dtype=float)
+    for column, route in zip(route_mix.columns, route_keys, strict=True):
+        values = route_mix[column].to_numpy(dtype=float)
+        axes[0].bar(
+            route_mix.index,
+            values,
+            bottom=bottom,
+            color=PRIORITY_COLORS[route],
+            edgecolor="white",
+            linewidth=0.5,
+            width=0.68,
+            label=PRIORITY_LABELS[route],
+        )
+        bottom += values
+    axes[0].set_ylim(0, 1.02)
+    axes[0].set_ylabel("Fraction of evaluated predictions")
+    axes[0].set_xlabel("Threshold profile")
+    axes[0].set_title("Screening-action composition", pad=6)
+    axes[0].legend(loc="upper center", bbox_to_anchor=(0.5, 1.28), ncol=2, fontsize=6.6)
+    finish_axis(axes[0], grid_axis="y")
+    add_panel_label(axes[0], "A", x=-0.17, y=1.08)
+
+    top30 = sensitivity.pivot(
+        index="tox_quantile",
+        columns="ood_quantile",
+        values="top30_jaccard_vs_baseline",
+    )
+    sns.heatmap(
+        top30,
+        ax=axes[1],
+        cmap="YlGnBu",
+        annot=True,
+        fmt=".2f",
+        vmin=0.0,
+        vmax=1.0,
+        linewidths=0.6,
+        linecolor="white",
+        cbar_kws={"label": "Jaccard overlap", "shrink": 0.82},
+    )
+    axes[1].set_xlabel("EcoOOD-score cutoff quantile")
+    axes[1].set_ylabel("Predicted-toxicity cutoff quantile")
+    axes[1].set_title("Top-30 priority-list stability", pad=6)
+    axes[1].tick_params(axis="x", rotation=0)
+    axes[1].tick_params(axis="y", rotation=0)
+    add_panel_label(axes[1], "B", x=-0.18, y=1.08)
+
+    save_figure(fig, output_dir, "Figure_S5")
 
 
 def load_priority_case_studies(path: Path) -> pd.DataFrame:
@@ -589,11 +666,11 @@ def figure4_operational_gate(
     }
     short_workflow_labels = {
         "Baseline only": "Baseline",
-        "Baseline + EcoOOD gate": "+ EcoOOD",
+        "Baseline + EcoOOD rule": "+ EcoOOD",
     }
     short_method_labels = {
         "EcoOOD": "EcoOOD",
-        "Distance-to-model": "Dist-to-model",
+        "Input-space kNN": "Input kNN",
         "Similarity AD": "Sim. AD",
     }
     short_model_labels = {
@@ -638,7 +715,7 @@ def figure4_operational_gate(
     )
     ax_false.set_ylabel("HC in low-priority")
     ax_false.set_xlabel("")
-    ax_false.set_title("Gate check", pad=5, fontsize=8.1)
+    ax_false.set_title("Rule validation", pad=5, fontsize=8.1)
     ax_false.set_xticks(ax_false.get_xticks())
     ax_false.set_xticklabels(
         [short_split_labels.get(label.get_text(), label.get_text()) for label in ax_false.get_xticklabels()]
@@ -1236,6 +1313,7 @@ def figure6_decision_map(predictions: pd.DataFrame, output_dir: Path) -> pd.Data
     ax_priority_stability.tick_params(axis="x", rotation=0)
     ax_priority_stability.tick_params(axis="y", rotation=0)
     save_figure(fig, output_dir, "Figure_5")
+    figure_s5_threshold_sensitivity(route_threshold_summary, sensitivity, output_dir)
     return priority
 
 

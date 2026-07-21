@@ -249,7 +249,7 @@ def main() -> None:
         pred["ecoood_score"] = external_components.ecoood_score
         pred["ad_similarity"] = external_ad.similarity
         pred["ad_distance_to_model"] = external_ad.distance_to_model
-        pred["ad_similarity_risk"] = 1.0 - pred["ad_similarity"].clip(upper=1.0)
+        pred["ad_similarity_risk"] = pred["ad_similarity"]
         seed_predictions.append(pred)
         pred.to_csv(out_dir / f"external_predictions_seed_{seed}.csv", index=False)
 

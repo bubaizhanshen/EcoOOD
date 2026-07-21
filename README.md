@@ -6,13 +6,15 @@ reliable enough for screening use by combining chemical, species, context,
 bioactivity-proxy, and model-uncertainty evidence.
 The reported screening actions are `screen now`, `lower priority`,
 `withhold/review`, and `prioritize testing`.
+Prediction-level diagnostic outputs may also use `predict`, `warn`, and
+`abstain`; these are internal reliability states used before aggregation into
+screening-action summaries.
 
 Repository: https://github.com/bubaizhanshen/EcoOOD
 
 This repository contains code, a small demo table, and reproducibility entry
-points. Draft documents, review files, final figure images, reference PDFs,
-full result tables, and local presentation materials are intentionally
-excluded.
+points. Large source downloads and generated analysis artifacts are kept out
+of version control.
 
 ## Why EcoOOD
 
@@ -22,10 +24,6 @@ deployment question:
 
 **Is this toxicity prediction reliable enough to be propagated into downstream
 environmental screening?**
-
-EcoOOD is intended as a reliability check for ecotoxicity screening workflows.
-It does not replace full ecological risk assessment, exposure assessment, or
-endpoint-specific expert review.
 
 ## Main Features
 
@@ -47,14 +45,14 @@ endpoint-specific expert review.
   - similarity AD
   - leverage AD
   - descriptor-range AD
-  - distance-to-model
+  - input-space k-nearest-neighbor distance
   - interval width
-  - Mahalanobis novelty
+  - descriptor-space Mahalanobis distance
   - Isolation Forest
   - Local Outlier Factor
-- `EcoOOD` multi-axis scoring and split conformal uncertainty summaries
+- `EcoOOD` joint prediction-level scoring and split conformal uncertainty summaries
 - screening-action validation under fixed review workloads
-- policy-relevant screening panel and downstream translation support analyses
+- 119-chemical class-focused screening workflow and downstream translation analyses
 
 ## Repository Layout
 
@@ -76,15 +74,11 @@ tests/                  Regression tests
   screening queues. The dashboard falls back to the demo table when full
   analysis tables are absent.
 
-## What Is Not Included
+## Source Data
 
-- Raw ECOTOX, DSSTox/CompTox, invitrodb/ToxCast, ECHA, and PMRA downloads.
-  These are public third-party resources and should be obtained from the
-  original providers using the scripts and notes in this repository.
-- Licensed papers, reference PDFs, and local reading folders.
-- Draft documents, local office files, cover letters, response materials,
-  final figure images, presentation exports, virtual environments, and bulky
-  intermediate benchmark directories.
+Raw ECOTOX, DSSTox/CompTox, invitrodb/ToxCast, ECHA, and PMRA downloads are
+obtained from the original providers with the source-specific build steps
+below. Generated benchmark tables remain local build outputs.
 
 ## Quick Start
 
@@ -92,7 +86,7 @@ Create the reference environment:
 
 ```bash
 conda create -y -n ecoood python=3.11 pip
-conda install -y -n ecoood pandas scikit-learn scipy pyarrow pyyaml requests joblib pytest matplotlib seaborn networkx lightgbm xgboost openpyxl
+conda install -y -n ecoood -c conda-forge pandas scikit-learn scipy pyarrow pyyaml requests joblib pytest matplotlib seaborn networkx lightgbm xgboost openpyxl rdkit
 conda run -n ecoood python -m pip install -e . --no-deps
 ```
 
@@ -122,20 +116,16 @@ Current views:
 
 - benchmark overview across deployment splits
 - toxicity-vs-EcoOOD decision maps
-- policy-relevant screening queue exploration
+- class-focused screening queue exploration
 - retrospective screening-action validation
 - upload of user-scored CSVs with at least `y_pred` and `ecoood_score`
 
 ## Data and Reproducibility
 
 This repository keeps code, a small synthetic demo table, and analysis scripts
-under version control. Full processed benchmark tables, analysis result tables,
-large raw downloads, third-party source documents, licensed reference PDFs, and
-bulky intermediate outputs are excluded from the public GitHub repository.
-Rebuild full benchmark tables locally from the original public providers before
-rerunning the full analysis pipeline. Analysis tables should be generated
-locally or distributed as separate archival release assets, not committed to
-the code repository.
+under version control. Full processed benchmark tables and large third-party
+downloads are rebuilt locally from the original public providers. Generated
+analysis tables are written to ignored output directories.
 
 ### Raw data fetch
 
@@ -167,9 +157,10 @@ conda run -n ecoood python scripts/build_ecotox_dataset.py \
   --structured-output data/processed/ecotox_acute_ecoood_1000chem_dsstox_mech_structured.csv
 ```
 
-The `--mechanism-cache` file is a derived ToxCast/invitrodb feature table. If
-it is not present locally, generate it from the public invitrodb summary inputs
-with the same build script or provide an equivalent locally generated cache.
+The `--mechanism-cache` file is a derived ToxCast/invitrodb bioactivity-proxy
+feature table. If it is not present locally, generate it from the public
+invitrodb summary inputs with the same build script or provide an equivalent
+locally generated cache.
 
 ### Run a benchmark
 
@@ -178,7 +169,7 @@ conda run -n ecoood python scripts/run_benchmark.py \
   --data data/processed/ecotox_acute_ecoood_1000chem_dsstox_mech_structured.csv \
   --splits random scaffold temporal species chemical_class \
   --models random_forest lightgbm \
-  --members 3 \
+  --members 5 \
   --output-dir outputs/demo_benchmark
 ```
 
@@ -212,14 +203,15 @@ The ECHA/PMRA external panel workflow is split into source retrieval, structure
 resolution, panel cleaning, and case-level validation:
 
 ```bash
+conda run -n ecoood python scripts/build_pmra_regulatory_candidate_set.py
 conda run -n ecoood python scripts/build_echa_pmra_external_rows.py
 conda run -n ecoood python scripts/prepare_echa_pmra_validation_panel.py
 conda run -n ecoood python scripts/build_echa_pmra_clean_panel.py
 conda run -n ecoood python scripts/run_echa_pmra_external_validation.py
 ```
 
-The raw regulatory pages and downloaded source documents are not redistributed;
-the scripts write intermediate files to local ignored output directories.
+The scripts write retrieved regulatory-source files and intermediate tables to
+local ignored output directories.
 
 ### Generate local figures
 
@@ -229,8 +221,7 @@ conda run -n ecoood python scripts/generate_workflow_schematics.py
 ```
 
 Generated PDF/PNG/SVG/TIF files are local build artifacts and are ignored by
-Git. Keep generated tables or figures as local outputs unless they are attached
-to a separate release or data archive.
+Git.
 
 ## Contributing
 

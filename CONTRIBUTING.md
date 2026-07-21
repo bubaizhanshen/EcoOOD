@@ -16,10 +16,9 @@ ecotoxicity screening. Useful contributions include:
 ## Before You Start
 
 - Open an issue for substantial changes before writing a large patch.
-- Keep contributions aligned with the current project scope: acute aquatic
-  ecotoxicity screening reliability, not full ecological risk assessment.
-- Avoid committing raw third-party downloads, licensed reference PDFs, or large
-  intermediate artifacts.
+- Keep contributions aligned with acute aquatic ecotoxicity screening
+  reliability.
+- Avoid committing raw third-party downloads or large intermediate artifacts.
 
 ## Development Setup
 
@@ -27,7 +26,7 @@ Create the reference environment:
 
 ```bash
 conda create -y -n ecoood python=3.11 pip
-conda install -y -n ecoood pandas scikit-learn scipy pyarrow pyyaml requests joblib pytest matplotlib seaborn networkx lightgbm xgboost openpyxl
+conda install -y -n ecoood -c conda-forge pandas scikit-learn scipy pyarrow pyyaml requests joblib pytest matplotlib seaborn networkx lightgbm xgboost openpyxl rdkit
 conda run -n ecoood python -m pip install -e . --no-deps
 ```
 
@@ -51,7 +50,7 @@ Minimum checks:
 
 ```bash
 conda run -n ecoood pytest -q
-python -m py_compile app/ecoood_explorer.py src/ecoood/dashboard.py scripts/run_dashboard.py
+conda run -n ecoood python -m compileall -q app src scripts tests
 ```
 
 If you change benchmark logic, also note:
@@ -76,10 +75,7 @@ Do not commit:
 - `data/raw/`
 - full processed benchmark tables under `data/processed/`; keep only
   `data/processed/demo_ecoood.csv` in GitHub
-- licensed papers or local reading collections
-- manuscript drafts, cover letters, response materials, or local Word exports
-- final figure images, presentation exports, result tables, and temporary
-  benchmark outputs
+- generated figures, result tables, and temporary benchmark outputs
 - credentials, secrets, or local dashboard secrets
 
 Generated tables and PDF/PNG/SVG/TIF files should remain local build artifacts

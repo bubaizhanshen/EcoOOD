@@ -1,22 +1,21 @@
-# Data Policy
+# Data
 
 This directory contains the small public demo input used by EcoOOD examples and
-tests. Full processed benchmark tables are generated locally from public
-third-party sources and are intentionally not tracked in the GitHub repository.
+tests. Full benchmark tables are generated locally from ECOTOX,
+DSSTox/CompTox, invitrodb/ToxCast, ECHA, and PMRA source data.
 
-## Included
+## Layout
 
-- `processed/demo_ecoood.csv`: small dashboard/example table.
+- `processed/demo_ecoood.csv`: synthetic dashboard and benchmark example
+- `raw/`: provider downloads created by the source-specific fetch scripts
+- `processed/`: locally built benchmark tables and feature caches
 
-## Not Included
+Only the demo table is versioned. The full processed files are rebuilt with the
+commands in the main [README](../README.md).
 
-The repository does not redistribute raw third-party downloads, licensed
-documents, reference PDFs, full processed benchmark tables, derived
-invitrodb/ToxCast feature caches, or local cache files. Raw resources should be
-obtained from their original providers with the download/build scripts in
-`scripts/`, then rebuilt locally under `data/processed/`.
+## Local Files
 
-Ignored local locations include:
+Typical local paths are:
 
 - `data/raw/`
 - full `data/processed/ecotox_acute_ecoood_*` benchmark tables

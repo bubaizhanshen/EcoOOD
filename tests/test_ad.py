@@ -33,8 +33,11 @@ def test_ad_scorer_increases_for_outside_descriptor_range() -> None:
     scores = scorer.predict(query, model_std=np.array([0.1, 0.5]), interval_width=np.array([0.2, 0.8]))
     assert scores.descriptor_range[0] == 0.0
     assert scores.descriptor_range[1] == 1.0
+    assert scores.similarity[0] == 0.0
+    assert scores.similarity[1] > scores.similarity[0]
     assert scores.leverage[1] > scores.leverage[0]
     assert scores.distance_to_model[1] > scores.distance_to_model[0]
+    assert not np.allclose(scores.distance_to_model, np.array([0.1, 0.5]))
     assert scores.interval_width[1] > scores.interval_width[0]
     assert scores.mahalanobis[1] > scores.mahalanobis[0]
     assert scores.isolation_forest.shape == (2,)

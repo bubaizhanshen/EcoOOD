@@ -63,9 +63,9 @@ class EcoOODSchema:
             "effect",
             "toxicity_value",
             "toxicity_unit",
+            "molar_concentration",
         }
     )
 
 
 DEFAULT_SCHEMA = EcoOODSchema()
-

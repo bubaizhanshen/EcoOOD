@@ -71,10 +71,11 @@ def _sample_adaptation_indices(n_total: int, n_adapt: int, seed: int) -> tuple[n
 
 
 def _known_ood_labels(df_test: pd.DataFrame, split_indices: SplitIndices, schema: EcoOODSchema) -> np.ndarray:
-    if schema.known_ood in df_test.columns:
-        return df_test[schema.known_ood].fillna(False).astype(bool).to_numpy()
-    if schema.hard_ood in df_test.columns and split_indices.split_name == "hard_ood":
-        return df_test[schema.hard_ood].fillna(False).astype(bool).to_numpy()
+    if split_indices.split_name == "hard_ood":
+        if schema.known_ood in df_test.columns:
+            return df_test[schema.known_ood].fillna(False).astype(bool).to_numpy()
+        if schema.hard_ood in df_test.columns:
+            return df_test[schema.hard_ood].fillna(False).astype(bool).to_numpy()
     return split_indices.test_is_ood
 
 
@@ -297,7 +298,7 @@ def main() -> None:
     parser.add_argument("--adapt-seeds", nargs="+", type=int, default=[100, 101, 102])
     parser.add_argument("--shots", nargs="+", type=int, default=[0, 20, 50, 100, 200])
     parser.add_argument("--alpha", type=float, default=0.1)
-    parser.add_argument("--members", type=int, default=3)
+    parser.add_argument("--members", type=int, default=5)
     parser.add_argument("--catastrophic-quantile", type=float, default=0.8)
     parser.add_argument("--output-dir", type=Path, default=Path("outputs/fewshot_recalibration"))
     parser.add_argument("--stem", default="Figure_6")

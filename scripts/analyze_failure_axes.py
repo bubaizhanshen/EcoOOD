@@ -27,7 +27,7 @@ AXIS_LABELS = {
     "chemical": "Chemical",
     "species": "Species",
     "context": "Context",
-    "mechanism": "Mechanism",
+    "mechanism": "Bioactivity proxy",
 }
 AXIS_COLORS = {
     "chemical": PALETTE["blue"],

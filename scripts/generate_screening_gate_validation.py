@@ -25,7 +25,7 @@ MODEL_COLORS = {
 WORKFLOW_ORDER = ["baseline_only", "baseline_plus_gate"]
 WORKFLOW_LABELS = {
     "baseline_only": "Baseline only",
-    "baseline_plus_gate": "Baseline + EcoOOD gate",
+    "baseline_plus_gate": "Baseline + EcoOOD rule",
 }
 WORKFLOW_COLORS = {
     "baseline_only": PALETTE["slate"],
@@ -404,7 +404,7 @@ def plot_screening_gate_validation(metrics: pd.DataFrame, summary: pd.DataFrame,
     )
     ax_false.set_ylabel("High-concern fraction within lower-priority outputs")
     ax_false.set_xlabel("")
-    ax_false.set_title("Gate validation lowers false reassurance", pad=6)
+    ax_false.set_title("Reliability assessment lowers false reassurance", pad=6)
     ax_false.tick_params(axis="x", rotation=20)
     finish_axis(ax_false, grid_axis="y")
     add_panel_label(ax_false, "A", x=-0.15, y=1.08)
@@ -422,9 +422,9 @@ def plot_screening_gate_validation(metrics: pd.DataFrame, summary: pd.DataFrame,
         palette={MODEL_LABELS[key]: MODEL_COLORS[key] for key in MODEL_ORDER},
         ax=ax_rescue,
     )
-    ax_rescue.set_ylabel("Baseline false negatives diverted by EcoOOD gate")
+    ax_rescue.set_ylabel("Baseline false negatives reassigned by EcoOOD")
     ax_rescue.set_xlabel("")
-    ax_rescue.set_title("Gate reroutes baseline misses", pad=6)
+    ax_rescue.set_title("EcoOOD reassigns baseline misses", pad=6)
     ax_rescue.tick_params(axis="x", rotation=20)
     finish_axis(ax_rescue, grid_axis="y")
     add_panel_label(ax_rescue, "B", x=-0.15, y=1.08)
@@ -474,7 +474,7 @@ def plot_screening_gate_validation(metrics: pd.DataFrame, summary: pd.DataFrame,
     ax_mix.set_xticks(x_positions, xticklabels)
     ax_mix.set_ylabel("Unique chemicals in pooled deployment panel")
     ax_mix.set_xlabel("")
-    ax_mix.set_title("Baseline-only propagation versus gated triage", pad=6)
+    ax_mix.set_title("Baseline propagation versus EcoOOD-supported actions", pad=6)
     finish_axis(ax_mix, grid_axis="y")
     add_panel_label(ax_mix, "C", x=-0.04, y=1.06)
     ax_mix.legend(loc="upper center", bbox_to_anchor=(0.5, 1.26), ncol=4, frameon=False, fontsize=6.8)
