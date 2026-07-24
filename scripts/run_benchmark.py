@@ -14,7 +14,7 @@ def main() -> None:
     parser.add_argument(
         "--splits",
         nargs="+",
-        default=["random", "scaffold", "chemical_class", "species", "temporal", "hard_ood"],
+        default=["random", "scaffold", "chemical_class", "species", "temporal"],
     )
     parser.add_argument("--models", nargs="+", default=["lightgbm", "random_forest"])
     parser.add_argument("--seed", type=int, default=42)

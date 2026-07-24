@@ -15,9 +15,6 @@ Thumbs.db
 venv/
 env/
 
-# Streamlit local state
-.streamlit/secrets.toml
-
 # Raw downloads and caches
 data/raw/
 *.part
@@ -28,6 +25,7 @@ Reference/
 # Local generated outputs
 outputs/
 results/
+releases/
 
 # Presentation exports
 presentation/
@@ -56,12 +54,16 @@ scripts/add_*_202*.py
 scripts/apply_*.py
 scripts/assemble_*.py
 scripts/audit_*.py
+!scripts/audit_benchmark_integrity.py
+!scripts/audit_deterministic_rejections.py
+!scripts/audit_species_chemical_overlap.py
 scripts/build_*candidate*.py
 !scripts/build_pmra_regulatory_candidate_set.py
 scripts/build_*inventory*.py
 scripts/clarify_*_202*.py
 scripts/clean_si_*_202*.py
 scripts/export_*.py
+!scripts/export_release_bundle.py
 scripts/extract_*.py
 scripts/final_*.py
 scripts/fix_*_202*.py
@@ -70,6 +72,7 @@ scripts/polish_*_202*.py
 scripts/probe_*.py
 scripts/refine_v*_frontmatter_*.py
 scripts/refine_submission_*.py
+scripts/revise_submission_*.py
 scripts/remove_si_duplicate_equations.py
 scripts/remove_self_coined_terms_*.py
 scripts/run_external_regulatory_validation.py
@@ -78,6 +81,7 @@ scripts/run_external_regulatory_validation.py
 scripts/run_verified_seed_panel_validation_*.py
 scripts/summarize_reference_metadata.py
 scripts/update_*.py
+scripts/generate_integrity_revision_figures.py
 tests/test_gate_method_comparison.py
 
 # Temporary local workspaces

@@ -3,11 +3,14 @@ seed: 42
 n_members: 5
 splits:
   - random
+  - chemical_random
   - scaffold
-  - chemical_class
-  - species
   - temporal
-  - hard_ood
+  - species
+  - chemical_class
 models:
   - lightgbm
   - random_forest
+  - xgboost
+deterministic_rejection_policy: withhold_review
+feature_policy: exclude_target_identifier_source_and_class_fields

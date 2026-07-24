@@ -74,6 +74,7 @@ def compute_seed_metrics(
     calib_df: pd.DataFrame,
     test_df: pd.DataFrame,
     seed: int,
+    ensemble_n_jobs: int = 5,
 ) -> tuple[dict[str, float | int | str], pd.DataFrame]:
     feature_builder = EcoFeatureBuilder(schema=DEFAULT_SCHEMA)
     train_bundle = feature_builder.fit_transform(train_df)
@@ -84,6 +85,7 @@ def compute_seed_metrics(
         model_name=MODEL_NAME,
         n_members=5,
         seed=seed,
+        n_jobs=ensemble_n_jobs,
     ).fit(train_bundle.full, train_df[DEFAULT_SCHEMA.target].to_numpy())
     calib_pred = model.predict(calib_bundle.full)
     test_pred = model.predict(test_bundle.full)
@@ -101,7 +103,6 @@ def compute_seed_metrics(
         calib_df,
         calib_bundle,
         model_std=calib_pred.std,
-        interval_width=calib_interval.width,
     )
     scorer.fit_meta(
         calib_components,
@@ -111,13 +112,11 @@ def compute_seed_metrics(
         test_df,
         test_bundle,
         model_std=test_pred.std,
-        interval_width=test_interval.width,
     )
     calib_components_pred = scorer.predict(
         calib_df,
         calib_bundle,
         model_std=calib_pred.std,
-        interval_width=calib_interval.width,
     )
 
     ad_scorer = ApplicabilityDomainScorer().fit(train_bundle)
@@ -133,15 +132,11 @@ def compute_seed_metrics(
     score_abstain = float(
         pd.Series(calib_components_pred.ecoood_score).quantile(0.85)
     )
-    width_warn = float(pd.Series(calib_interval.width).quantile(0.50))
-    width_abstain = float(pd.Series(calib_interval.width).quantile(0.85))
     decisions = decision_labels(
         test_components.ecoood_score,
-        test_interval.width,
+        None,
         score_warn_threshold=score_warn,
         score_abstain_threshold=score_abstain,
-        width_warn_threshold=width_warn,
-        width_abstain_threshold=width_abstain,
     )
 
     y_test = test_df[DEFAULT_SCHEMA.target].to_numpy()
@@ -208,7 +203,7 @@ def aggregate_metrics(summary: pd.DataFrame) -> pd.DataFrame:
         "uncertainty_error_corr",
         "uncertainty_novelty_corr",
         "aurc",
-        "catastrophic_error_capture_rate",
+        "top_decile_error_capture_rate",
         "auroc_id_vs_ood",
         "aupr_id_vs_ood",
         "fpr95",
@@ -228,6 +223,8 @@ def parse_args() -> argparse.Namespace:
         description="Run a fixed-year temporal block validation on the structured EcoOOD benchmark."
     )
     parser.add_argument("--seeds", nargs="+", type=int, default=SEEDS)
+    parser.add_argument("--data-path", type=Path, default=DATA_PATH)
+    parser.add_argument("--ensemble-n-jobs", type=int, default=5)
     parser.add_argument("--output-dir", type=Path, default=DEFAULT_OUT_DIR)
     return parser.parse_args()
 
@@ -236,7 +233,7 @@ def main() -> None:
     args = parse_args()
     args.output_dir.mkdir(parents=True, exist_ok=True)
 
-    raw = pd.read_csv(DATA_PATH)
+    raw = pd.read_csv(args.data_path)
     working = attach_rdkit_descriptors(raw, DEFAULT_SCHEMA)
     working = working[working[DEFAULT_SCHEMA.target].notna()].reset_index(drop=True)
     block = build_temporal_block(working)
@@ -248,7 +245,13 @@ def main() -> None:
     metric_rows: list[dict[str, float | int | str]] = []
     prediction_frames: list[pd.DataFrame] = []
     for seed in args.seeds:
-        metrics, predictions = compute_seed_metrics(train_df, calib_df, test_df, seed)
+        metrics, predictions = compute_seed_metrics(
+            train_df,
+            calib_df,
+            test_df,
+            seed,
+            ensemble_n_jobs=args.ensemble_n_jobs,
+        )
         metric_rows.append(metrics)
         prediction_frames.append(predictions)
 
@@ -263,6 +266,7 @@ def main() -> None:
 
     note = [
         "Prospective temporal block validation",
+        f"Structured benchmark path: {args.data_path}",
         f"Train years: {block.metadata['train_years']} ({block.metadata['train_rows']} rows; {block.metadata['train_chemicals']} chemicals)",
         f"Calibration years: {block.metadata['calib_years']} ({block.metadata['calib_rows']} rows; {block.metadata['calib_chemicals']} chemicals)",
         f"Test years: {block.metadata['test_years']} ({block.metadata['test_rows']} rows; {block.metadata['test_chemicals']} chemicals)",

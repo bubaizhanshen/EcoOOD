@@ -19,7 +19,7 @@ from ecoood.features import EcoFeatureBuilder, attach_rdkit_descriptors
 from ecoood.models import BootstrapEnsembleRegressor
 from ecoood.ood import EcoOODScorer
 from ecoood.schema import DEFAULT_SCHEMA
-from ecoood.splits import group_holdout_split
+from ecoood.splits import balanced_group_fold_split
 
 if __package__:
     from scripts.build_ecotox_dataset import ECOTOX_MEMBERS, quality_filter, read_zip_member
@@ -213,6 +213,7 @@ def compute_seed_metrics(
     calib_df: pd.DataFrame,
     test_df: pd.DataFrame,
     seed: int,
+    ensemble_n_jobs: int = 5,
 ) -> tuple[dict[str, float | int | str], pd.DataFrame]:
     feature_builder = EcoFeatureBuilder(schema=DEFAULT_SCHEMA)
     train_bundle = feature_builder.fit_transform(train_df)
@@ -223,6 +224,7 @@ def compute_seed_metrics(
         model_name=MODEL_NAME,
         n_members=5,
         seed=seed,
+        n_jobs=ensemble_n_jobs,
     ).fit(train_bundle.full, train_df[DEFAULT_SCHEMA.target].to_numpy())
     calib_pred = model.predict(calib_bundle.full)
     test_pred = model.predict(test_bundle.full)
@@ -240,7 +242,6 @@ def compute_seed_metrics(
         calib_df,
         calib_bundle,
         model_std=calib_pred.std,
-        interval_width=calib_interval.width,
     )
     scorer.fit_meta(
         calib_components,
@@ -250,13 +251,11 @@ def compute_seed_metrics(
         test_df,
         test_bundle,
         model_std=test_pred.std,
-        interval_width=test_interval.width,
     )
     calib_components_pred = scorer.predict(
         calib_df,
         calib_bundle,
         model_std=calib_pred.std,
-        interval_width=calib_interval.width,
     )
 
     ad_scorer = ApplicabilityDomainScorer().fit(train_bundle)
@@ -268,15 +267,11 @@ def compute_seed_metrics(
 
     score_warn = float(pd.Series(calib_components_pred.ecoood_score).quantile(0.50))
     score_abstain = float(pd.Series(calib_components_pred.ecoood_score).quantile(0.85))
-    width_warn = float(pd.Series(calib_interval.width).quantile(0.50))
-    width_abstain = float(pd.Series(calib_interval.width).quantile(0.85))
     decisions = decision_labels(
         test_components.ecoood_score,
-        test_interval.width,
+        None,
         score_warn_threshold=score_warn,
         score_abstain_threshold=score_abstain,
-        width_warn_threshold=width_warn,
-        width_abstain_threshold=width_abstain,
     )
 
     y_test = test_df[DEFAULT_SCHEMA.target].to_numpy()
@@ -342,7 +337,7 @@ def aggregate_metrics(summary: pd.DataFrame) -> pd.DataFrame:
         "uncertainty_error_corr",
         "uncertainty_novelty_corr",
         "aurc",
-        "catastrophic_error_capture_rate",
+        "top_decile_error_capture_rate",
         "auroc_id_vs_ood",
         "aupr_id_vs_ood",
         "fpr95",
@@ -366,6 +361,18 @@ def parse_args() -> argparse.Namespace:
         type=int,
         default=DEFAULT_SEEDS,
         help="Random seeds to evaluate. Defaults to the five-seed benchmark sweep.",
+    )
+    parser.add_argument(
+        "--data-path",
+        type=Path,
+        default=DATA_PATH,
+        help="Structured benchmark CSV used for the validation.",
+    )
+    parser.add_argument(
+        "--ensemble-n-jobs",
+        type=int,
+        default=5,
+        help="Parallel workers used to fit each bootstrap ensemble.",
     )
     parser.add_argument(
         "--output-dir",
@@ -408,7 +415,7 @@ def main() -> None:
     out_dir.mkdir(parents=True, exist_ok=True)
     write_status(out_dir, f"Starting reference-holdout validation for seeds: {', '.join(str(seed) for seed in args.seeds)}")
 
-    df = pd.read_csv(DATA_PATH)
+    df = pd.read_csv(args.data_path)
     df = attach_rdkit_descriptors(df, DEFAULT_SCHEMA)
     df = df[df[DEFAULT_SCHEMA.target].notna()].reset_index(drop=True)
 
@@ -422,17 +429,26 @@ def main() -> None:
 
     for index, seed in enumerate(args.seeds, start=1):
         write_status(out_dir, f"Running seed {seed} ({index}/{len(args.seeds)})")
-        split = group_holdout_split(
+        split = balanced_group_fold_split(
             df,
             group_col="reference_number",
             split_name="reference_holdout",
-            seed=seed,
+            fold_index=index - 1,
+            n_splits=len(args.seeds),
+            fold_seed=20260724,
+            calib_seed=seed,
         )
         train_df = df.loc[split.train].reset_index(drop=True)
         calib_df = df.loc[split.calib].reset_index(drop=True)
         test_df = df.loc[split.test].reset_index(drop=True)
 
-        metrics, predictions = compute_seed_metrics(train_df, calib_df, test_df, seed=seed)
+        metrics, predictions = compute_seed_metrics(
+            train_df,
+            calib_df,
+            test_df,
+            seed=seed,
+            ensemble_n_jobs=args.ensemble_n_jobs,
+        )
         metric_rows.append(metrics)
         prediction_rows.append(predictions)
         predictions.to_csv(out_dir / f"predictions_seed_{seed}.csv", index=False)
@@ -446,6 +462,24 @@ def main() -> None:
                 "train_references": int(train_df["reference_number"].nunique()),
                 "calib_references": int(calib_df["reference_number"].nunique()),
                 "test_references": int(test_df["reference_number"].nunique()),
+                "train_calib_reference_overlap": int(
+                    len(
+                        set(train_df["reference_number"])
+                        & set(calib_df["reference_number"])
+                    )
+                ),
+                "train_test_reference_overlap": int(
+                    len(
+                        set(train_df["reference_number"])
+                        & set(test_df["reference_number"])
+                    )
+                ),
+                "calib_test_reference_overlap": int(
+                    len(
+                        set(calib_df["reference_number"])
+                        & set(test_df["reference_number"])
+                    )
+                ),
                 "train_chemicals": int(train_df[DEFAULT_SCHEMA.chemical_id].nunique()),
                 "calib_chemicals": int(calib_df[DEFAULT_SCHEMA.chemical_id].nunique()),
                 "test_chemicals": int(test_df[DEFAULT_SCHEMA.chemical_id].nunique()),
@@ -473,6 +507,7 @@ def main() -> None:
 
     notes = [
         "Reference-holdout validation groups rows by ECOTOX reference_number after matching processed benchmark rows back to raw ECOTOX records.",
+        f"Structured benchmark path: {args.data_path}.",
         f"Structured rows matched to reference metadata: {len(df)}.",
         f"Unique reference_numbers in structured benchmark: {df['reference_number'].nunique()}.",
         f"Unique test_ids represented: {row_meta['test_id'].replace('', pd.NA).nunique(dropna=True)}.",

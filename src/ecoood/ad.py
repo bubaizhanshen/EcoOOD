@@ -43,6 +43,7 @@ class ADBaselineScores:
     leverage: np.ndarray
     descriptor_range: np.ndarray
     distance_to_model: np.ndarray
+    equal_block_distance: np.ndarray
     interval_width: np.ndarray
     mahalanobis: np.ndarray
     isolation_forest: np.ndarray
@@ -54,6 +55,7 @@ class ADBaselineScores:
             "ad_leverage": self.leverage,
             "ad_range": self.descriptor_range,
             "ad_distance_to_model": self.distance_to_model,
+            "ad_equal_block_distance": self.equal_block_distance,
             "uncertainty_interval_width": self.interval_width,
             "ood_mahalanobis": self.mahalanobis,
             "ood_isolation_forest": self.isolation_forest,
@@ -71,6 +73,83 @@ class ApplicabilityDomainScorer:
         self.dense_train: np.ndarray | None = None
         self.isolation_forest: IsolationForest | None = None
         self.lof: LocalOutlierFactor | None = None
+        self.equal_block_scales: list[float] = []
+        self.equal_block_scale_by_name: dict[str, float] = {}
+        self.equal_block_train: sparse.csr_matrix | None = None
+
+    @staticmethod
+    def _as_csr(block) -> sparse.csr_matrix:
+        if sparse.issparse(block):
+            return sparse.csr_matrix(block, dtype=np.float32)
+        values = np.asarray(block, dtype=np.float32)
+        if values.ndim == 1:
+            values = values.reshape(-1, 1)
+        return sparse.csr_matrix(values)
+
+    @classmethod
+    def _support_blocks(
+        cls,
+        bundle: FeatureBundle,
+    ) -> list[tuple[str, sparse.csr_matrix]]:
+        return [
+            ("fingerprint", cls._as_csr(bundle.fingerprint)),
+            ("descriptor", cls._as_csr(bundle.descriptor)),
+            ("species", cls._as_csr(bundle.species)),
+            ("context", cls._as_csr(bundle.context)),
+            ("bioactivity_proxy", cls._as_csr(bundle.mechanism)),
+        ]
+
+    @staticmethod
+    def _block_rms_norm(block: sparse.csr_matrix) -> float:
+        if block.shape[1] == 0:
+            return 1.0
+        squared_norm = np.asarray(block.multiply(block).sum(axis=1)).ravel()
+        value = float(np.sqrt(np.mean(squared_norm)))
+        return value if np.isfinite(value) and value > 1e-12 else 1.0
+
+    def _fit_equal_block_representation(
+        self,
+        train_bundle: FeatureBundle,
+    ) -> sparse.csr_matrix:
+        named_blocks = [
+            (name, block)
+            for name, block in self._support_blocks(train_bundle)
+            if block.shape[1] > 0
+        ]
+        blocks = [block for _, block in named_blocks]
+        self.equal_block_scales = [self._block_rms_norm(block) for block in blocks]
+        self.equal_block_scale_by_name = {
+            name: scale
+            for (name, _), scale in zip(named_blocks, self.equal_block_scales, strict=True)
+        }
+        if not blocks:
+            return sparse.csr_matrix((train_bundle.full.shape[0], 0), dtype=np.float32)
+        normalizer = np.sqrt(len(blocks))
+        scaled = [
+            block.multiply(1.0 / (scale * normalizer))
+            for block, scale in zip(blocks, self.equal_block_scales, strict=True)
+        ]
+        return sparse.hstack(scaled, format="csr")
+
+    def _transform_equal_block_representation(
+        self,
+        bundle: FeatureBundle,
+    ) -> sparse.csr_matrix:
+        blocks = [
+            block
+            for _, block in self._support_blocks(bundle)
+            if block.shape[1] > 0
+        ]
+        if len(blocks) != len(self.equal_block_scales):
+            raise ValueError("Training and query feature blocks do not match.")
+        if not blocks:
+            return sparse.csr_matrix((bundle.full.shape[0], 0), dtype=np.float32)
+        normalizer = np.sqrt(len(blocks))
+        scaled = [
+            block.multiply(1.0 / (scale * normalizer))
+            for block, scale in zip(blocks, self.equal_block_scales, strict=True)
+        ]
+        return sparse.hstack(scaled, format="csr")
 
     @staticmethod
     def _stack_dense(bundle: FeatureBundle) -> np.ndarray:
@@ -93,6 +172,7 @@ class ApplicabilityDomainScorer:
 
     def fit(self, train_bundle: FeatureBundle) -> "ApplicabilityDomainScorer":
         self.train_bundle = train_bundle
+        self.equal_block_train = self._fit_equal_block_representation(train_bundle)
         descriptor = np.asarray(train_bundle.descriptor, dtype=float)
         if descriptor.ndim == 1:
             descriptor = descriptor.reshape(-1, 1)
@@ -158,6 +238,16 @@ class ApplicabilityDomainScorer:
             bundle.full,
             metric="euclidean",
         )
+        equal_block_query = self._transform_equal_block_representation(bundle)
+        equal_block_distance = (
+            _mean_knn_distance(
+                self.equal_block_train,
+                equal_block_query,
+                metric="euclidean",
+            )
+            if self.equal_block_train is not None and self.equal_block_train.shape[1] > 0
+            else np.zeros(len(distance_to_model), dtype=float)
+        )
         interval_width_arr = (
             np.asarray(interval_width, dtype=float)
             if interval_width is not None
@@ -187,6 +277,7 @@ class ApplicabilityDomainScorer:
             leverage=np.asarray(leverage, dtype=float),
             descriptor_range=np.asarray(descriptor_range, dtype=float),
             distance_to_model=distance_to_model,
+            equal_block_distance=np.asarray(equal_block_distance, dtype=float),
             interval_width=interval_width_arr,
             mahalanobis=np.asarray(mahalanobis, dtype=float),
             isolation_forest=np.asarray(isolation_forest, dtype=float),

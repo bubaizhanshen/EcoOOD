@@ -26,7 +26,7 @@ def test_benchmark_smoke(tmp_path: Path) -> None:
     assert (tmp_path / "results" / "ood_score_summary.csv").exists()
 
 
-def test_held_out_domain_labels_are_not_overridden_by_explicit_hard_ood_column() -> None:
+def test_held_out_domain_labels_follow_the_split_definition() -> None:
     test_df = pd.DataFrame({DEFAULT_SCHEMA.known_ood: [False, False]})
     split = SplitIndices(
         train=np.array([0]),

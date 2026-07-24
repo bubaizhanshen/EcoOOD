@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
+import hashlib
 from typing import Any
 
 import numpy as np
@@ -38,6 +39,26 @@ RDKit_DESCRIPTOR_MAP = {
 }
 
 _MORGAN_GENERATORS: dict[int, Any] = {}
+
+# These fields are targets, target-scale intermediates, identifiers, or audit
+# metadata. The builder uses explicit feature blocks below, but this guard
+# prevents a leakage-prone field from being reintroduced accidentally.
+FORBIDDEN_PREDICTOR_FIELDS = {
+    "target_log_molar",
+    "molar_concentration",
+    "toxicity_value",
+    "toxicity_unit",
+    "chemical_id",
+    "chemical_name",
+    "casrn",
+    "dtxsid",
+    "inchikey",
+    "doi",
+    "source",
+    "chemical_class",
+    "is_hard_ood",
+    "known_ood",
+}
 
 
 def _safe_numeric(series: pd.Series) -> pd.Series:
@@ -77,7 +98,9 @@ def binary_fingerprints(smiles: pd.Series, n_bits: int = 2048) -> sparse.csr_mat
             continue
         mol = smiles_to_mol(value)
         if DataStructs is None or (rdFingerprintGenerator is None and AllChem is None):
-            rng = np.random.default_rng(abs(hash(value)) % (2**32))
+            digest = hashlib.sha256(value.encode("utf-8")).digest()
+            seed = int.from_bytes(digest[:8], byteorder="little", signed=False)
+            rng = np.random.default_rng(seed)
             row = np.zeros(n_bits, dtype=np.float32)
             row[rng.choice(n_bits, size=min(16, n_bits), replace=False)] = 1.0
             rows.append(row)
@@ -205,6 +228,13 @@ class EcoFeatureBuilder:
             + self.context_cols
             + self.species_cols
         )
+        selected = set(self.numeric_cols) | set(self.categorical_cols)
+        leaked = sorted(selected & FORBIDDEN_PREDICTOR_FIELDS)
+        if leaked:
+            raise ValueError(
+                "Target-derived, identifier, or audit-only fields cannot enter the predictor matrix: "
+                + ", ".join(leaked)
+            )
 
     @staticmethod
     def _numeric_pipeline() -> Pipeline:

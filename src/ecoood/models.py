@@ -20,7 +20,9 @@ except ImportError:  # pragma: no cover
 
 def make_estimator(model_name: str, seed: int, params: dict | None = None):
     params = dict(params or {})
-    if model_name == "lightgbm" and LGBMRegressor is not None:
+    if model_name == "lightgbm":
+        if LGBMRegressor is None:
+            raise ImportError("lightgbm is not available in the active environment.")
         defaults = dict(
             n_estimators=400,
             learning_rate=0.05,
@@ -68,15 +70,17 @@ def make_estimator(model_name: str, seed: int, params: dict | None = None):
         )
         defaults.update(params)
         return MLPRegressor(**defaults)
-    defaults = dict(
-        n_estimators=500,
-        max_features="sqrt",
-        min_samples_leaf=2,
-        random_state=seed,
-        n_jobs=1,
-    )
-    defaults.update(params)
-    return RandomForestRegressor(**defaults)
+    if model_name == "random_forest":
+        defaults = dict(
+            n_estimators=500,
+            max_features="sqrt",
+            min_samples_leaf=2,
+            random_state=seed,
+            n_jobs=1,
+        )
+        defaults.update(params)
+        return RandomForestRegressor(**defaults)
+    raise ValueError(f"Unsupported model '{model_name}'.")
 
 
 @dataclass

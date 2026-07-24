@@ -8,7 +8,7 @@ EcoOOD is a research codebase for reliability assessment in aquatic
 ecotoxicity screening. Useful contributions include:
 
 - bug fixes and reproducibility improvements
-- documentation and dashboard usability improvements
+- documentation and command-line usability improvements
 - new benchmark analyses that match the project scope
 - better data validation, curation, and quality-control utilities
 - carefully justified model or OOD baselines
@@ -26,14 +26,10 @@ Create the reference environment:
 
 ```bash
 conda create -y -n ecoood python=3.11 pip
-conda install -y -n ecoood -c conda-forge pandas scikit-learn scipy pyarrow pyyaml requests joblib pytest matplotlib seaborn networkx lightgbm xgboost openpyxl rdkit
+conda install -y -n ecoood -c conda-forge \
+  pandas scikit-learn scipy pyarrow pyyaml requests joblib beautifulsoup4 \
+  pytest matplotlib seaborn networkx lightgbm xgboost openpyxl rdkit
 conda run -n ecoood python -m pip install -e . --no-deps
-```
-
-Optional dashboard dependencies:
-
-```bash
-conda run -n ecoood python -m pip install ".[ui]" --no-deps
 ```
 
 ## Workflow
@@ -50,7 +46,7 @@ Minimum checks:
 
 ```bash
 conda run -n ecoood pytest -q
-conda run -n ecoood python -m compileall -q app src scripts tests
+conda run -n ecoood python -m compileall -q src scripts tests
 ```
 
 If you change benchmark logic, also note:
@@ -76,7 +72,7 @@ Do not commit:
 - full processed benchmark tables under `data/processed/`; keep only
   `data/processed/demo_ecoood.csv` in GitHub
 - generated figures, result tables, and temporary benchmark outputs
-- credentials, secrets, or local dashboard secrets
+- credentials or secrets
 
 Generated tables and PDF/PNG/SVG/TIF files should remain local build artifacts
 unless they are intentionally attached to a separate release or data archive.

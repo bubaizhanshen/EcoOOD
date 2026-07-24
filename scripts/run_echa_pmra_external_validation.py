@@ -12,7 +12,7 @@ from ecoood.conformal import ScaledConformalRegressor
 from ecoood.evaluation import ood_metrics, regression_metrics
 from ecoood.features import EcoFeatureBuilder, attach_rdkit_descriptors
 from ecoood.models import BootstrapEnsembleRegressor
-from ecoood.ood import EcoOODScorer
+from ecoood.ood import CalibrationRiskScorer, EcoOODScorer
 from ecoood.schema import DEFAULT_SCHEMA
 
 RDLogger.DisableLog("rdApp.*")
@@ -37,9 +37,12 @@ def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(
         description="Run case-level external validation on cleaned ECHA PMRA panels."
     )
+    parser.add_argument("--data-path", type=Path, default=DATA_PATH)
     parser.add_argument("--panel-path", type=Path, default=DEFAULT_PANEL_PATH)
     parser.add_argument("--output-dir", type=Path, default=DEFAULT_OUT_DIR)
     parser.add_argument("--seeds", nargs="+", type=int, default=DEFAULT_SEEDS)
+    parser.add_argument("--bootstrap-replicates", type=int, default=1000)
+    parser.add_argument("--ensemble-n-jobs", type=int, default=5)
     return parser.parse_args()
 
 
@@ -86,15 +89,23 @@ def fixed_burden_metrics(
     review_mask[review_idx] = True
 
     errors = frame["abs_error"].to_numpy(dtype=float)
-    severe_threshold = float(np.quantile(errors, 0.9))
-    severe_mask = errors >= severe_threshold
+    high_error_threshold = float(np.quantile(errors, 0.9))
+    high_error_mask = errors >= high_error_threshold
     return {
         "review_fraction": review_fraction,
         "review_n": int(review_mask.sum()),
         "mean_abs_error_review": float(errors[review_mask].mean()) if review_mask.any() else float("nan"),
         "mean_abs_error_propagate": float(errors[~review_mask].mean()) if (~review_mask).any() else float("nan"),
-        "severe_error_capture_rate": float(review_mask[severe_mask].mean()) if severe_mask.any() else float("nan"),
-        "propagate_severe_error_rate": float(severe_mask[~review_mask].mean()) if (~review_mask).any() else float("nan"),
+        "high_error_capture_rate": (
+            float(review_mask[high_error_mask].mean())
+            if high_error_mask.any()
+            else float("nan")
+        ),
+        "propagate_high_error_rate": (
+            float(high_error_mask[~review_mask].mean())
+            if (~review_mask).any()
+            else float("nan")
+        ),
     }
 
 
@@ -103,7 +114,13 @@ def summarize_seed(seed: int, frame: pd.DataFrame) -> tuple[pd.DataFrame, pd.Dat
     burden_rows: list[dict[str, object]] = []
     methods = {
         "ecoood": "ecoood_score",
+        "ecoood_endpoint_balanced": "ecoood_endpoint_balanced",
+        "ensemble_sd_risk": "ensemble_sd_risk",
+        "input_space_knn_plus_sd_risk": "input_space_knn_plus_sd_risk",
+        "equal_block_knn_plus_sd_risk": "equal_block_knn_plus_sd_risk",
+        "generic_support_plus_sd_risk": "generic_support_plus_sd_risk",
         "distance_to_model": "ad_distance_to_model",
+        "equal_block_distance": "ad_equal_block_distance",
         "similarity_ad_risk": "ad_similarity_risk",
     }
     grouped = list(frame.groupby("endpoint", sort=False)) + [("pooled", frame)]
@@ -128,7 +145,9 @@ def summarize_seed(seed: int, frame: pd.DataFrame) -> tuple[pd.DataFrame, pd.Dat
                     "method": method_name,
                     "score_col": score_col,
                     "aurc": direct["aurc"],
-                    "catastrophic_error_capture_rate": direct["catastrophic_error_capture_rate"],
+                    "top_decile_error_capture_rate": direct[
+                        "top_decile_error_capture_rate"
+                    ],
                 }
             )
             burden = fixed_burden_metrics(
@@ -162,18 +181,65 @@ def aggregate_summary(frame: pd.DataFrame, group_cols: list[str]) -> pd.DataFram
     return summary
 
 
+def chemical_identity_overlap_audit(train_df: pd.DataFrame, panel: pd.DataFrame) -> pd.DataFrame:
+    rows: list[dict[str, object]] = []
+    for field in ["casrn", "dtxsid", "inchikey"]:
+        if field not in train_df or field not in panel:
+            continue
+        train_values = set(train_df[field].dropna().astype(str).str.strip()) - {""}
+        panel_values = set(panel[field].dropna().astype(str).str.strip()) - {""}
+        rows.append(
+            {
+                "identity_field": field,
+                "n_train_values": len(train_values),
+                "n_panel_values": len(panel_values),
+                "n_overlapping_values": len(train_values & panel_values),
+            }
+        )
+    return pd.DataFrame(rows)
+
+
+def chemical_cluster_bootstrap(
+    frame: pd.DataFrame,
+    *,
+    seed: int,
+    n_replicates: int,
+) -> pd.DataFrame:
+    """Cluster bootstrap case-level regression metrics by chemical identity."""
+    chemical_groups = list(frame.groupby("chemical_id", sort=False))
+    if len(chemical_groups) < 2:
+        return pd.DataFrame()
+    rng = np.random.default_rng(seed)
+    metric_rows: list[dict[str, float | int]] = []
+    chemical_ids = np.array([chemical_id for chemical_id, _ in chemical_groups], dtype=object)
+    group_map = {chemical_id: group for chemical_id, group in chemical_groups}
+    for replicate in range(n_replicates):
+        sampled = rng.choice(chemical_ids, size=len(chemical_ids), replace=True)
+        sample = pd.concat([group_map[chemical_id] for chemical_id in sampled], ignore_index=True)
+        metrics = regression_metrics(
+            sample["target_log_molar"].to_numpy(dtype=float),
+            sample["y_pred"].to_numpy(dtype=float),
+        )
+        metric_rows.append({"seed": seed, "replicate": replicate, **metrics})
+    return pd.DataFrame(metric_rows)
+
+
 def main() -> None:
     args = parse_args()
     out_dir = args.output_dir
     out_dir.mkdir(parents=True, exist_ok=True)
 
     write_status(out_dir, "Loading train benchmark and cleaned external panel.")
-    train_df = attach_rdkit_descriptors(pd.read_csv(DATA_PATH), DEFAULT_SCHEMA)
+    train_df = attach_rdkit_descriptors(pd.read_csv(args.data_path), DEFAULT_SCHEMA)
     panel = attach_rdkit_descriptors(pd.read_csv(args.panel_path), DEFAULT_SCHEMA)
+    chemical_identity_overlap_audit(train_df, panel).to_csv(
+        out_dir / "external_train_panel_identity_overlap_audit.csv", index=False
+    )
 
     seed_predictions: list[pd.DataFrame] = []
     metrics_frames: list[pd.DataFrame] = []
     burden_frames: list[pd.DataFrame] = []
+    cluster_bootstrap_frames: list[pd.DataFrame] = []
 
     for idx, seed in enumerate(args.seeds, start=1):
         write_status(out_dir, f"Running seed {seed} ({idx}/{len(args.seeds)})")
@@ -188,6 +254,7 @@ def main() -> None:
             model_name=MODEL_NAME,
             n_members=5,
             seed=seed,
+            n_jobs=args.ensemble_n_jobs,
         ).fit(train_bundle.full, train_seed_df[DEFAULT_SCHEMA.target].to_numpy())
         calib_pred = model.predict(calib_bundle.full)
         external_pred = model.predict(external_bundle.full)
@@ -205,7 +272,6 @@ def main() -> None:
             calib_df,
             calib_bundle,
             model_std=calib_pred.std,
-            interval_width=calib_interval.width,
         )
         scorer.fit_meta(
             calib_components,
@@ -215,14 +281,65 @@ def main() -> None:
             panel,
             external_bundle,
             model_std=external_pred.std,
-            interval_width=external_interval.width,
+        )
+        endpoint_balanced_scorer = EcoOODScorer(schema=DEFAULT_SCHEMA).fit(
+            train_seed_df,
+            train_bundle,
+        )
+        endpoint_balanced_scorer.fit_meta(
+            calib_components,
+            residuals=np.abs(
+                calib_df[DEFAULT_SCHEMA.target].to_numpy() - calib_pred.mean
+            ),
+            groups=calib_df[DEFAULT_SCHEMA.endpoint],
+            groupwise_labels=True,
+            balance_groups=True,
         )
 
         ad_scorer = ApplicabilityDomainScorer().fit(train_bundle)
+        calib_ad = ad_scorer.predict(
+            calib_bundle,
+            model_std=calib_pred.std,
+            interval_width=calib_interval.width,
+        )
         external_ad = ad_scorer.predict(
             external_bundle,
             model_std=external_pred.std,
             interval_width=external_interval.width,
+        )
+
+        calib_residuals = np.abs(calib_df[DEFAULT_SCHEMA.target].to_numpy() - calib_pred.mean)
+        ensemble_sd_risk = CalibrationRiskScorer().fit(
+            pd.DataFrame({"ensemble_sd": calib_pred.std}),
+            calib_residuals,
+        )
+        input_space_knn_plus_sd_risk = CalibrationRiskScorer().fit(
+            pd.DataFrame(
+                {
+                    "input_space_knn": calib_ad.distance_to_model,
+                    "ensemble_sd": calib_pred.std,
+                }
+            ),
+            calib_residuals,
+        )
+        equal_block_knn_plus_sd_risk = CalibrationRiskScorer().fit(
+            pd.DataFrame(
+                {
+                    "equal_block_knn": calib_ad.equal_block_distance,
+                    "ensemble_sd": calib_pred.std,
+                }
+            ),
+            calib_residuals,
+        )
+        generic_support_plus_sd_risk = CalibrationRiskScorer().fit(
+            pd.DataFrame(
+                {
+                    "similarity_novelty": calib_ad.similarity,
+                    "equal_block_knn": calib_ad.equal_block_distance,
+                    "ensemble_sd": calib_pred.std,
+                }
+            ),
+            calib_residuals,
         )
 
         pred = panel[
@@ -247,8 +364,45 @@ def main() -> None:
         pred["model_std"] = external_pred.std
         pred["interval_width"] = external_interval.width
         pred["ecoood_score"] = external_components.ecoood_score
+        external_component_frame = scorer.component_frame(
+            panel,
+            external_bundle,
+            model_std=external_pred.std,
+        )
+        pred["ecoood_endpoint_balanced"] = (
+            endpoint_balanced_scorer.score_components(external_component_frame)
+        )
+        pred["ensemble_sd_risk"] = ensemble_sd_risk.predict(
+            pd.DataFrame({"ensemble_sd": external_pred.std})
+        )
+        pred["input_space_knn_plus_sd_risk"] = input_space_knn_plus_sd_risk.predict(
+            pd.DataFrame(
+                {
+                    "input_space_knn": external_ad.distance_to_model,
+                    "ensemble_sd": external_pred.std,
+                }
+            )
+        )
+        pred["equal_block_knn_plus_sd_risk"] = equal_block_knn_plus_sd_risk.predict(
+            pd.DataFrame(
+                {
+                    "equal_block_knn": external_ad.equal_block_distance,
+                    "ensemble_sd": external_pred.std,
+                }
+            )
+        )
+        pred["generic_support_plus_sd_risk"] = generic_support_plus_sd_risk.predict(
+            pd.DataFrame(
+                {
+                    "similarity_novelty": external_ad.similarity,
+                    "equal_block_knn": external_ad.equal_block_distance,
+                    "ensemble_sd": external_pred.std,
+                }
+            )
+        )
         pred["ad_similarity"] = external_ad.similarity
         pred["ad_distance_to_model"] = external_ad.distance_to_model
+        pred["ad_equal_block_distance"] = external_ad.equal_block_distance
         pred["ad_similarity_risk"] = pred["ad_similarity"]
         seed_predictions.append(pred)
         pred.to_csv(out_dir / f"external_predictions_seed_{seed}.csv", index=False)
@@ -256,6 +410,13 @@ def main() -> None:
         metric_frame, burden_frame = summarize_seed(seed, pred)
         metrics_frames.append(metric_frame)
         burden_frames.append(burden_frame)
+        cluster_bootstrap_frames.append(
+            chemical_cluster_bootstrap(
+                pred,
+                seed=seed,
+                n_replicates=args.bootstrap_replicates,
+            )
+        )
 
     predictions = pd.concat(seed_predictions, ignore_index=True)
     metrics_all = pd.concat(metrics_frames, ignore_index=True)
@@ -264,6 +425,16 @@ def main() -> None:
     predictions.to_csv(out_dir / "external_predictions_all.csv", index=False)
     metrics_all.to_csv(out_dir / "external_metrics_all.csv", index=False)
     burden_all.to_csv(out_dir / "external_burden_all.csv", index=False)
+    cluster_bootstrap = pd.concat(cluster_bootstrap_frames, ignore_index=True)
+    cluster_bootstrap.to_csv(out_dir / "external_cluster_bootstrap_all.csv", index=False)
+    cluster_quantiles = (
+        cluster_bootstrap[["rmse", "mae", "spearman", "bias"]]
+        .quantile([0.025, 0.5, 0.975])
+        .transpose()
+        .reset_index()
+        .rename(columns={"index": "metric", 0.025: "ci_2_5", 0.5: "median", 0.975: "ci_97_5"})
+    )
+    cluster_quantiles.to_csv(out_dir / "external_cluster_bootstrap_summary.csv", index=False)
 
     metrics_summary = aggregate_summary(metrics_all, ["endpoint", "method", "score_col"])
     burden_summary = aggregate_summary(burden_all, ["endpoint", "method", "score_col"])
@@ -292,6 +463,7 @@ def main() -> None:
     case_summary.to_csv(out_dir / "external_case_summary.csv", index=False)
 
     lines = [
+        f"Train benchmark path: {args.data_path}",
         f"Panel path: {args.panel_path}",
         f"Cases: {panel.shape[0]}",
         f"Chemicals: {panel['chemical_name'].nunique()}",

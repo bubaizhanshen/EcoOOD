@@ -4,21 +4,14 @@ import argparse
 from dataclasses import dataclass
 from pathlib import Path
 
-import matplotlib
-
-matplotlib.use("Agg")
-
-import matplotlib.pyplot as plt
 import numpy as np
 import pandas as pd
-import seaborn as sns
 
 from ecoood.conformal import ScaledConformalRegressor
 from ecoood.evaluation import interval_metrics, ood_metrics
 from ecoood.features import EcoFeatureBuilder, FeatureBundle, attach_rdkit_descriptors
 from ecoood.models import BootstrapEnsembleRegressor
 from ecoood.ood import EcoOODScorer
-from ecoood.plotting import ACS_DOUBLE_WIDTH, PALETTE, add_panel_label, apply_publication_style, finish_axis, save_figure
 from ecoood.schema import DEFAULT_SCHEMA, EcoOODSchema
 from ecoood.splits import SplitIndices, build_split
 
@@ -57,13 +50,35 @@ def _slice_bundle(bundle: FeatureBundle, idx: np.ndarray) -> FeatureBundle:
     )
 
 
-def _sample_adaptation_indices(n_total: int, n_adapt: int, seed: int) -> tuple[np.ndarray, np.ndarray]:
+def _sample_adaptation_indices(
+    frame: pd.DataFrame,
+    n_adapt: int,
+    seed: int,
+    *,
+    group_column: str,
+) -> tuple[np.ndarray, np.ndarray]:
+    n_total = len(frame)
     if n_adapt <= 0:
         return np.array([], dtype=int), np.arange(n_total, dtype=int)
     if n_adapt >= n_total:
         raise ValueError("n_adapt must be smaller than n_total.")
     rng = np.random.default_rng(seed)
-    chosen = np.sort(rng.choice(n_total, size=n_adapt, replace=False))
+    groups = frame[group_column].fillna("missing").astype(str)
+    group_values = groups.drop_duplicates().to_numpy()
+    rng.shuffle(group_values)
+    selected_groups: list[str] = []
+    selected_rows = 0
+    for group in group_values:
+        group_n = int((groups == group).sum())
+        if selected_rows + group_n >= n_total:
+            continue
+        selected_groups.append(group)
+        selected_rows += group_n
+        if selected_rows >= n_adapt:
+            break
+    chosen = np.flatnonzero(groups.isin(selected_groups).to_numpy())
+    if len(chosen) == 0:
+        raise RuntimeError("No complete adaptation group could be sampled.")
     mask = np.ones(n_total, dtype=bool)
     mask[chosen] = False
     remaining = np.arange(n_total, dtype=int)[mask]
@@ -71,11 +86,7 @@ def _sample_adaptation_indices(n_total: int, n_adapt: int, seed: int) -> tuple[n
 
 
 def _known_ood_labels(df_test: pd.DataFrame, split_indices: SplitIndices, schema: EcoOODSchema) -> np.ndarray:
-    if split_indices.split_name == "hard_ood":
-        if schema.known_ood in df_test.columns:
-            return df_test[schema.known_ood].fillna(False).astype(bool).to_numpy()
-        if schema.hard_ood in df_test.columns:
-            return df_test[schema.hard_ood].fillna(False).astype(bool).to_numpy()
+    del df_test, schema
     return split_indices.test_is_ood
 
 
@@ -86,6 +97,7 @@ def _fit_split(
     seed: int,
     alpha: float,
     members: int,
+    ensemble_n_jobs: int,
     schema: EcoOODSchema,
 ) -> SplitFit:
     working = attach_rdkit_descriptors(df, schema)
@@ -104,6 +116,7 @@ def _fit_split(
         model_name=model_name,
         n_members=members,
         seed=seed,
+        n_jobs=ensemble_n_jobs,
     ).fit(train_bundle.full, train_df[schema.target].to_numpy())
     calib_pred = model.predict(calib_bundle.full)
     test_pred = model.predict(test_bundle.full)
@@ -184,9 +197,10 @@ def _recalibrated_score(
     adapt_interval_width: np.ndarray,
     eval_interval_width: np.ndarray,
     schema: EcoOODSchema,
-    catastrophic_quantile: float,
+    high_error_quantile: float,
+    min_score_refit_records: int,
 ) -> np.ndarray:
-    if len(adapt_idx) == 0:
+    if len(adapt_idx) < min_score_refit_records:
         return fit.base_ecoood_score[eval_idx]
     local_scorer = EcoOODScorer(schema=schema).fit(fit.train_df, fit.train_bundle)
     adapt_df = fit.test_df.iloc[adapt_idx].reset_index(drop=True)
@@ -200,7 +214,7 @@ def _recalibrated_score(
     local_scorer.fit_meta(
         adapt_components,
         residuals=np.abs(fit.y_test[adapt_idx] - fit.y_pred_test[adapt_idx]),
-        catastrophic_quantile=catastrophic_quantile,
+        high_error_quantile=high_error_quantile,
     )
     eval_df = fit.test_df.iloc[eval_idx].reset_index(drop=True)
     eval_bundle = _slice_bundle(fit.test_bundle, eval_idx)
@@ -217,7 +231,7 @@ def _aggregate_results(frame: pd.DataFrame) -> pd.DataFrame:
     metric_cols = [
         col
         for col in frame.columns
-        if col not in {"split", "model", "seed", "adapt_seed", "shots", "n_eval"}
+        if col not in {"split", "model", "seed", "adapt_seed", "shots"}
     ]
     aggregated = (
         frame.groupby(["split", "model", "shots"], dropna=False)[metric_cols]
@@ -233,77 +247,34 @@ def _aggregate_results(frame: pd.DataFrame) -> pd.DataFrame:
     return aggregated
 
 
-def _plot_curves(
-    summary: pd.DataFrame,
-    output_dir: Path,
-    target_coverage: float,
-    *,
-    stem: str = "Figure_6",
-) -> None:
-    palette = {
-        "temporal": PALETTE["blue"],
-        "species": PALETTE["red"],
-        "chemical_class": PALETTE["green"],
-    }
-    fig, axes = plt.subplots(1, 2, figsize=(ACS_DOUBLE_WIDTH, 2.75), constrained_layout=True)
-    for split, frame in summary.groupby("split"):
-        color = palette.get(split, None)
-        x = frame["shots"]
-        axes[0].plot(x, frame["coverage_after_mean"], marker="o", color=color, label=split)
-        axes[0].fill_between(
-            x,
-            frame["coverage_after_mean"] - frame["coverage_after_std"].fillna(0.0),
-            frame["coverage_after_mean"] + frame["coverage_after_std"].fillna(0.0),
-            alpha=0.18,
-            color=color,
-        )
-        axes[1].plot(x, frame["aurc_after_mean"], marker="o", color=color, label=split)
-        axes[1].fill_between(
-            x,
-            frame["aurc_after_mean"] - frame["aurc_after_std"].fillna(0.0),
-            frame["aurc_after_mean"] + frame["aurc_after_std"].fillna(0.0),
-            alpha=0.18,
-            color=color,
-        )
-    axes[0].axhline(target_coverage, color=PALETTE["ink"], linestyle="--", linewidth=0.9)
-    axes[0].set_xlabel("New-domain labeled samples")
-    axes[0].set_ylabel("90% interval coverage")
-    axes[1].set_xlabel("New-domain labeled samples")
-    axes[1].set_ylabel("AURC (lower is better)")
-    axes[0].set_title("Coverage recovery", pad=6)
-    axes[1].set_title("Post-recalibration risk", pad=6)
-    add_panel_label(axes[0], "A", x=-0.18, y=1.08)
-    add_panel_label(axes[1], "B", x=-0.18, y=1.08)
-    finish_axis(axes[0])
-    finish_axis(axes[1])
-    handles, labels = axes[0].get_legend_handles_labels()
-    fig.legend(
-        handles,
-        [label.replace("_", " ").title() for label in labels],
-        loc="upper center",
-        bbox_to_anchor=(0.5, 1.08),
-        ncol=3,
-        title="",
-        frameon=False,
-    )
-    save_figure(fig, output_dir, stem)
-
-
 def main() -> None:
-    parser = argparse.ArgumentParser(description="Run few-shot OOD recalibration experiments.")
+    parser = argparse.ArgumentParser(description="Run local interval recalibration experiments.")
     parser.add_argument("--data", type=Path, required=True)
     parser.add_argument("--splits", nargs="+", default=["temporal", "species", "chemical_class"])
     parser.add_argument("--models", nargs="+", default=["lightgbm"])
     parser.add_argument("--seeds", nargs="+", type=int, default=[40, 41, 42, 43, 44])
-    parser.add_argument("--adapt-seeds", nargs="+", type=int, default=[100, 101, 102])
+    parser.add_argument(
+        "--adapt-seeds",
+        nargs="+",
+        type=int,
+        default=list(range(100, 130)),
+    )
     parser.add_argument("--shots", nargs="+", type=int, default=[0, 20, 50, 100, 200])
     parser.add_argument("--alpha", type=float, default=0.1)
     parser.add_argument("--members", type=int, default=5)
-    parser.add_argument("--catastrophic-quantile", type=float, default=0.8)
+    parser.add_argument("--ensemble-n-jobs", type=int, default=5)
+    parser.add_argument("--high-error-quantile", type=float, default=0.9)
+    parser.add_argument("--min-score-refit-records", type=int, default=100)
+    parser.add_argument(
+        "--refit-score",
+        action="store_true",
+        help=(
+            "Opt in to refitting the high-error score with local labels. "
+            "This analysis recalibrates conformal intervals only by default."
+        ),
+    )
     parser.add_argument("--output-dir", type=Path, default=Path("outputs/fewshot_recalibration"))
-    parser.add_argument("--stem", default="Figure_6")
     args = parser.parse_args()
-    apply_publication_style()
 
     if args.data.suffix == ".parquet":
         df = pd.read_parquet(args.data)
@@ -322,6 +293,7 @@ def main() -> None:
                     seed=seed,
                     alpha=args.alpha,
                     members=args.members,
+                    ensemble_n_jobs=args.ensemble_n_jobs,
                     schema=schema,
                 )
                 known_ood = _known_ood_labels(fit.test_df, fit.split_indices, schema)
@@ -330,7 +302,16 @@ def main() -> None:
                 for shot in valid_shots:
                     active_adapt_seeds = args.adapt_seeds if shot > 0 else [0]
                     for adapt_seed in active_adapt_seeds:
-                        adapt_idx, eval_idx = _sample_adaptation_indices(n_test, shot, seed=adapt_seed) if shot > 0 else (np.array([], dtype=int), np.arange(n_test, dtype=int))
+                        adapt_idx, eval_idx = (
+                            _sample_adaptation_indices(
+                                fit.test_df,
+                                shot,
+                                seed=adapt_seed,
+                                group_column=schema.chemical_id,
+                            )
+                            if shot > 0
+                            else (np.array([], dtype=int), np.arange(n_test, dtype=int))
+                        )
                         base_metrics = _evaluate_subset(
                             y_true=fit.y_test[eval_idx],
                             y_pred=fit.y_pred_test[eval_idx],
@@ -363,14 +344,19 @@ def main() -> None:
                             recal_lower = eval_interval.lower
                             recal_upper = eval_interval.upper
                             recal_width = eval_interval.width
-                            recal_score = _recalibrated_score(
-                                fit=fit,
-                                adapt_idx=adapt_idx,
-                                eval_idx=eval_idx,
-                                adapt_interval_width=adapt_interval.width,
-                                eval_interval_width=recal_width,
-                                schema=schema,
-                                catastrophic_quantile=args.catastrophic_quantile,
+                            recal_score = (
+                                _recalibrated_score(
+                                    fit=fit,
+                                    adapt_idx=adapt_idx,
+                                    eval_idx=eval_idx,
+                                    adapt_interval_width=adapt_interval.width,
+                                    eval_interval_width=recal_width,
+                                    schema=schema,
+                                    high_error_quantile=args.high_error_quantile,
+                                    min_score_refit_records=args.min_score_refit_records,
+                                )
+                                if args.refit_score
+                                else fit.base_ecoood_score[eval_idx]
                             )
 
                         recal_metrics = _evaluate_subset(
@@ -390,7 +376,34 @@ def main() -> None:
                                 "seed": seed,
                                 "adapt_seed": adapt_seed,
                                 "shots": shot,
+                                "n_adapt": int(len(adapt_idx)),
+                                "n_adapt_chemicals": int(
+                                    fit.test_df.iloc[adapt_idx][schema.chemical_id].nunique()
+                                ),
                                 "n_eval": int(len(eval_idx)),
+                                "score_refit": bool(
+                                    args.refit_score
+                                    and len(adapt_idx) >= args.min_score_refit_records
+                                ),
+                                "score_high_error_positive_count": (
+                                    int(
+                                        np.sum(
+                                            np.abs(
+                                                fit.y_test[adapt_idx]
+                                                - fit.y_pred_test[adapt_idx]
+                                            )
+                                            >= np.quantile(
+                                                np.abs(
+                                                    fit.y_test[adapt_idx]
+                                                    - fit.y_pred_test[adapt_idx]
+                                                ),
+                                                args.high_error_quantile,
+                                            )
+                                        )
+                                    )
+                                    if len(adapt_idx)
+                                    else 0
+                                ),
                                 "coverage_before": base_metrics["coverage"],
                                 "coverage_after": recal_metrics["coverage"],
                                 "coverage_recovery": recal_metrics["coverage"] - base_metrics["coverage"],
@@ -399,8 +412,12 @@ def main() -> None:
                                 "aurc_before": base_metrics["aurc"],
                                 "aurc_after": recal_metrics["aurc"],
                                 "aurc_improvement": base_metrics["aurc"] - recal_metrics["aurc"],
-                                "catastrophic_capture_before": base_metrics["catastrophic_error_capture_rate"],
-                                "catastrophic_capture_after": recal_metrics["catastrophic_error_capture_rate"],
+                                "top_decile_error_capture_before": base_metrics[
+                                    "top_decile_error_capture_rate"
+                                ],
+                                "top_decile_error_capture_after": recal_metrics[
+                                    "top_decile_error_capture_rate"
+                                ],
                                 "target_coverage_gap_before": (1 - args.alpha) - base_metrics["coverage"],
                                 "target_coverage_gap_after": (1 - args.alpha) - recal_metrics["coverage"],
                             }
@@ -412,7 +429,6 @@ def main() -> None:
     args.output_dir.mkdir(parents=True, exist_ok=True)
     all_results.to_csv(args.output_dir / "fewshot_recalibration_all.csv", index=False)
     summary.to_csv(args.output_dir / "fewshot_recalibration_summary.csv", index=False)
-    _plot_curves(summary, args.output_dir, target_coverage=1 - args.alpha, stem=args.stem)
     print(summary.to_string(index=False))
 
 

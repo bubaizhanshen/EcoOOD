@@ -61,8 +61,10 @@ def selective_risk_summary(
     y_true_sorted = y_true[order]
     y_pred_sorted = y_pred[order]
     abs_error_sorted = np.abs(y_true_sorted - y_pred_sorted)
-    catastrophic_threshold = float(np.quantile(np.abs(y_true - y_pred), 0.9))
-    baseline_catastrophic_rate = float(np.mean(np.abs(y_true - y_pred) >= catastrophic_threshold))
+    top_decile_threshold = float(np.quantile(np.abs(y_true - y_pred), 0.9))
+    baseline_top_decile_rate = float(
+        np.mean(np.abs(y_true - y_pred) >= top_decile_threshold)
+    )
 
     rows: list[dict[str, float]] = []
     for abstain_fraction in abstain_fractions:
@@ -71,7 +73,7 @@ def selective_risk_summary(
         retained_error = abs_error_sorted[:keep_count]
         retained_true = y_true_sorted[:keep_count]
         retained_pred = y_pred_sorted[:keep_count]
-        catastrophic_rate = float(np.mean(retained_error >= catastrophic_threshold))
+        top_decile_rate = float(np.mean(retained_error >= top_decile_threshold))
         rows.append(
             {
                 "abstain_fraction": float(abstain_fraction),
@@ -79,8 +81,10 @@ def selective_risk_summary(
                 "rmse": float(np.sqrt(mean_squared_error(retained_true, retained_pred))),
                 "mae": float(mean_absolute_error(retained_true, retained_pred)),
                 "mean_abs_error": float(np.mean(retained_error)),
-                "catastrophic_error_rate": catastrophic_rate,
-                "catastrophic_error_reduction": float(baseline_catastrophic_rate - catastrophic_rate),
+                "top_decile_error_rate": top_decile_rate,
+                "top_decile_error_rate_reduction": float(
+                    baseline_top_decile_rate - top_decile_rate
+                ),
                 "error_reduction": float(np.mean(np.abs(y_true - y_pred)) - np.mean(retained_error)),
             }
         )
@@ -94,11 +98,15 @@ def ood_metrics(
     ood_label: np.ndarray | None,
 ) -> dict[str, float]:
     error = np.abs(y_true - y_pred)
-    catastrophic = error >= np.quantile(error, 0.9)
+    top_decile_error = error >= np.quantile(error, 0.9)
     _, _, aurc = risk_coverage(y_true, y_pred, score)
     metrics = {
         "aurc": aurc,
-        "catastrophic_error_capture_rate": float(np.mean(score[catastrophic] >= np.quantile(score, 0.8))) if catastrophic.any() else float("nan"),
+        "top_decile_error_capture_rate": (
+            float(np.mean(score[top_decile_error] >= np.quantile(score, 0.8)))
+            if top_decile_error.any()
+            else float("nan")
+        ),
     }
     if ood_label is not None and len(np.unique(ood_label)) > 1:
         metrics["auroc_id_vs_ood"] = float(roc_auc_score(ood_label, score))
@@ -146,7 +154,7 @@ def score_method_metrics(
         "score_mean": float(np.mean(score)),
         "score_std": float(np.std(score)),
         "aurc": direct["aurc"],
-        "catastrophic_error_capture_rate": direct["catastrophic_error_capture_rate"],
+        "top_decile_error_capture_rate": direct["top_decile_error_capture_rate"],
         "known_ood_auroc": direct["auroc_id_vs_ood"],
         "known_ood_aupr": direct["aupr_id_vs_ood"],
         "reference_auroc": reference["auroc_id_vs_ood"],

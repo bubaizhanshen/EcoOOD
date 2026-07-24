@@ -8,16 +8,34 @@ from scripts.run_fewshot_recalibration import _aggregate_results, _sample_adapta
 
 
 def test_sample_adaptation_indices_returns_disjoint_sets() -> None:
-    adapt, eval_idx = _sample_adaptation_indices(n_total=10, n_adapt=3, seed=7)
-    assert len(adapt) == 3
-    assert len(eval_idx) == 7
+    frame = pd.DataFrame(
+        {"chemical_id": ["a", "a", "b", "b", "c", "c", "d", "d", "e", "e"]}
+    )
+    adapt, eval_idx = _sample_adaptation_indices(
+        frame,
+        n_adapt=3,
+        seed=7,
+        group_column="chemical_id",
+    )
+    assert len(adapt) >= 3
     assert set(adapt).isdisjoint(set(eval_idx))
     assert sorted(np.concatenate([adapt, eval_idx]).tolist()) == list(range(10))
+    selected = set(frame.iloc[adapt]["chemical_id"])
+    assert all(
+        frame.index[frame["chemical_id"].eq(chemical)].isin(adapt).all()
+        for chemical in selected
+    )
 
 
 def test_sample_adaptation_indices_rejects_full_takeover() -> None:
+    frame = pd.DataFrame({"chemical_id": ["a", "a", "b", "b", "c"]})
     with pytest.raises(ValueError):
-        _sample_adaptation_indices(n_total=5, n_adapt=5, seed=1)
+        _sample_adaptation_indices(
+            frame,
+            n_adapt=5,
+            seed=1,
+            group_column="chemical_id",
+        )
 
 
 def test_aggregate_results_summarizes_mean_and_std() -> None:
@@ -37,8 +55,8 @@ def test_aggregate_results_summarizes_mean_and_std() -> None:
             "aurc_before": [0.05, 0.06],
             "aurc_after": [0.04, 0.05],
             "aurc_improvement": [0.01, 0.01],
-            "catastrophic_capture_before": [0.4, 0.5],
-            "catastrophic_capture_after": [0.5, 0.6],
+            "top_decile_error_capture_before": [0.4, 0.5],
+            "top_decile_error_capture_after": [0.5, 0.6],
             "target_coverage_gap_before": [0.08, 0.06],
             "target_coverage_gap_after": [0.02, 0.0],
         }

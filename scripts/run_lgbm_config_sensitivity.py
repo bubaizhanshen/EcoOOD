@@ -11,8 +11,14 @@ from ecoood.pipeline import ExperimentConfig, run_single_experiment
 
 
 DEFAULT_STRUCTURED = Path("data/processed/ecotox_acute_ecoood_1000chem_dsstox_mech_structured.csv")
-DEFAULT_FULL = Path("data/processed/ecotox_acute_ecoood_1000chem_dsstox_mech.csv")
-DEFAULT_SPLITS = ["random", "scaffold", "temporal", "species", "chemical_class", "hard_ood"]
+DEFAULT_SPLITS = [
+    "random",
+    "chemical_random",
+    "scaffold",
+    "temporal",
+    "species",
+    "chemical_class",
+]
 DEFAULT_SEEDS = [40, 41, 42, 43, 44]
 
 CONFIGS = {
@@ -25,7 +31,7 @@ CONFIGS = {
         "colsample_bytree": 0.8,
         "n_jobs": 1,
     },
-    "manuscript": {
+    "reference": {
         "n_estimators": 400,
         "learning_rate": 0.05,
         "num_leaves": 63,
@@ -73,23 +79,19 @@ def _aggregate(frames: list[pd.DataFrame], keys: list[str]) -> pd.DataFrame:
     return combined, aggregated
 
 
-def _load_data(structured_path: Path, full_path: Path) -> tuple[pd.DataFrame, pd.DataFrame]:
-    return pd.read_csv(structured_path), pd.read_csv(full_path)
-
-
 def main() -> None:
     parser = argparse.ArgumentParser(description="Run LightGBM configuration sensitivity for EcoOOD.")
     parser.add_argument("--structured-data", type=Path, default=DEFAULT_STRUCTURED)
-    parser.add_argument("--full-data", type=Path, default=DEFAULT_FULL)
     parser.add_argument("--splits", nargs="+", default=DEFAULT_SPLITS)
     parser.add_argument("--seeds", nargs="+", type=int, default=DEFAULT_SEEDS)
     parser.add_argument("--members", type=int, default=5)
+    parser.add_argument("--ensemble-n-jobs", type=int, default=5)
     parser.add_argument("--alpha", type=float, default=0.1)
     parser.add_argument("--output-dir", type=Path, default=Path("outputs/lgbm_config_sensitivity"))
     args = parser.parse_args()
 
     _quiet_rdkit()
-    structured_df, full_df = _load_data(args.structured_data, args.full_data)
+    structured_df = pd.read_csv(args.structured_data)
     args.output_dir.mkdir(parents=True, exist_ok=True)
 
     benchmark_frames: list[pd.DataFrame] = []
@@ -99,7 +101,6 @@ def main() -> None:
     for config_name, params in CONFIGS.items():
         for seed in args.seeds:
             for split in args.splits:
-                df = full_df if split == "hard_ood" else structured_df
                 run_dir = args.output_dir / "runs" / config_name / f"seed_{seed}" / split
                 config = ExperimentConfig(
                     split=split,
@@ -109,9 +110,9 @@ def main() -> None:
                     n_members=args.members,
                     output_dir=str(run_dir),
                     estimator_params=params,
-                    ensemble_n_jobs=1,
+                    ensemble_n_jobs=args.ensemble_n_jobs,
                 )
-                metrics, _, score_summary = run_single_experiment(df, config=config)
+                metrics, _, score_summary = run_single_experiment(structured_df, config=config)
                 row = {
                     **metrics,
                     "config": config_name,

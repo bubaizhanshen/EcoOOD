@@ -18,4 +18,4 @@ def test_selective_risk_summary_improves_when_high_error_samples_removed() -> No
     assert summary.loc[2, "retained_fraction"] == pytest.approx(0.6)
     assert summary.loc[2, "rmse"] < summary.loc[0, "rmse"]
     assert summary.loc[2, "mean_abs_error"] < summary.loc[0, "mean_abs_error"]
-    assert summary.loc[2, "catastrophic_error_reduction"] >= 0.0
+    assert summary.loc[2, "top_decile_error_rate_reduction"] >= 0.0

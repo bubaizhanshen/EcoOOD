@@ -1,8 +1,10 @@
 from __future__ import annotations
 
 import numpy as np
+import pytest
 from scipy import sparse
 
+import ecoood.models as models
 from ecoood.models import BootstrapEnsembleRegressor, make_estimator
 
 
@@ -26,3 +28,14 @@ def test_mlp_ensemble_handles_sparse_inputs() -> None:
     assert pred.mean.shape == (40,)
     assert pred.std.shape == (40,)
     assert np.isfinite(pred.mean).all()
+
+
+def test_unknown_model_is_rejected() -> None:
+    with pytest.raises(ValueError, match="Unsupported model"):
+        make_estimator("typo", seed=123)
+
+
+def test_missing_lightgbm_is_not_silently_replaced(monkeypatch) -> None:
+    monkeypatch.setattr(models, "LGBMRegressor", None)
+    with pytest.raises(ImportError, match="lightgbm"):
+        make_estimator("lightgbm", seed=123)

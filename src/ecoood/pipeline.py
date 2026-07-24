@@ -2,16 +2,21 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 from pathlib import Path
+import re
 
 import numpy as np
 import pandas as pd
 
 from .ad import ApplicabilityDomainScorer
-from .conformal import ScaledConformalRegressor, decision_labels
+from .conformal import (
+    GroupConditionalScaledConformalRegressor,
+    ScaledConformalRegressor,
+    decision_labels,
+)
 from .evaluation import interval_metrics, ood_metrics, reference_ood_metrics, regression_metrics, save_metrics, save_predictions, score_method_metrics
 from .features import EcoFeatureBuilder, attach_rdkit_descriptors
 from .models import BootstrapEnsembleRegressor
-from .ood import EcoOODScorer
+from .ood import CalibrationRiskScorer, EcoOODScorer
 from .schema import DEFAULT_SCHEMA, EcoOODSchema
 from .splits import SplitIndices, build_split
 
@@ -26,6 +31,10 @@ class ExperimentConfig:
     output_dir: str | None = None
     estimator_params: dict | None = None
     ensemble_n_jobs: int = -1
+    permute_training_targets: bool = False
+    high_error_quantile: float = 0.9
+    high_error_quantile_sensitivity: tuple[float, ...] = (0.8, 0.9, 0.95)
+    endpoint_conformal_min_group_size: int = 20
 
 
 def _select(df: pd.DataFrame, idx: np.ndarray) -> pd.DataFrame:
@@ -33,19 +42,19 @@ def _select(df: pd.DataFrame, idx: np.ndarray) -> pd.DataFrame:
 
 
 def _known_ood_labels(df_test: pd.DataFrame, split_indices: SplitIndices, schema: EcoOODSchema) -> np.ndarray:
-    if split_indices.split_name == "hard_ood":
-        if schema.known_ood in df_test.columns:
-            return df_test[schema.known_ood].fillna(False).astype(bool).to_numpy()
-        if schema.hard_ood in df_test.columns:
-            return df_test[schema.hard_ood].fillna(False).astype(bool).to_numpy()
+    del df_test, schema
     return split_indices.test_is_ood
+
+
+def _metric_token(value: object) -> str:
+    return re.sub(r"[^a-z0-9]+", "_", str(value).casefold()).strip("_")
 
 
 def run_single_experiment(
     df: pd.DataFrame,
     config: ExperimentConfig,
     schema: EcoOODSchema = DEFAULT_SCHEMA,
-) -> tuple[dict[str, float], pd.DataFrame]:
+) -> tuple[dict[str, float], pd.DataFrame, pd.DataFrame]:
     working = attach_rdkit_descriptors(df, schema)
     working = working[working[schema.target].notna()].reset_index(drop=True)
     split_indices = build_split(working, split=config.split, schema=schema, seed=config.seed)
@@ -58,13 +67,17 @@ def run_single_experiment(
     calib_bundle = feature_builder.transform(calib_df)
     test_bundle = feature_builder.transform(test_df)
 
+    train_target = train_df[schema.target].to_numpy(copy=True)
+    if config.permute_training_targets:
+        train_target = np.random.default_rng(config.seed + 9173).permutation(train_target)
+
     model = BootstrapEnsembleRegressor(
         model_name=config.model_name,
         n_members=config.n_members,
         seed=config.seed,
         n_jobs=config.ensemble_n_jobs,
         estimator_params=config.estimator_params,
-    ).fit(train_bundle.full, train_df[schema.target].to_numpy())
+    ).fit(train_bundle.full, train_target)
     calib_pred = model.predict(calib_bundle.full)
     test_pred = model.predict(test_bundle.full)
 
@@ -75,6 +88,20 @@ def run_single_experiment(
     )
     calib_interval = conformal.predict(calib_pred.mean, scale=np.maximum(calib_pred.std, 1e-3))
     test_interval = conformal.predict(test_pred.mean, scale=np.maximum(test_pred.std, 1e-3))
+    endpoint_conformal = GroupConditionalScaledConformalRegressor(
+        alpha=config.alpha,
+        min_group_size=config.endpoint_conformal_min_group_size,
+    ).fit(
+        calib_df[schema.target].to_numpy(),
+        calib_pred.mean,
+        groups=calib_df[schema.endpoint],
+        scale=np.maximum(calib_pred.std, 1e-3),
+    )
+    endpoint_test_interval = endpoint_conformal.predict(
+        test_pred.mean,
+        groups=test_df[schema.endpoint],
+        scale=np.maximum(test_pred.std, 1e-3),
+    )
 
     scorer = EcoOODScorer(schema=schema).fit(train_df, train_bundle)
     calib_components = scorer.component_frame(
@@ -86,6 +113,13 @@ def run_single_experiment(
     scorer.fit_meta(
         calib_components,
         residuals=np.abs(calib_df[schema.target].to_numpy() - calib_pred.mean),
+        high_error_quantile=config.high_error_quantile,
+    )
+    test_component_frame = scorer.component_frame(
+        test_df,
+        test_bundle,
+        model_std=test_pred.std,
+        interval_width=test_interval.width,
     )
     test_components = scorer.predict(
         test_df,
@@ -99,6 +133,7 @@ def run_single_experiment(
         model_std=calib_pred.std,
         interval_width=calib_interval.width,
     )
+    calib_ecoood_score = scorer.score_components(calib_components)
 
     ad_scorer = ApplicabilityDomainScorer().fit(train_bundle)
     calib_ad = ad_scorer.predict(
@@ -112,24 +147,137 @@ def run_single_experiment(
         interval_width=test_interval.width,
     )
 
-    score_warn = float(np.quantile(scorer.meta_model.predict_proba(scorer.component_scaler.transform(calib_components))[:, 1], 0.5)) if scorer.meta_model is not None else float(np.quantile(scorer.component_scaler.transform(calib_components).mean(axis=1), 0.5))
-    score_abstain = float(np.quantile(scorer.meta_model.predict_proba(scorer.component_scaler.transform(calib_components))[:, 1], 0.85)) if scorer.meta_model is not None else float(np.quantile(scorer.component_scaler.transform(calib_components).mean(axis=1), 0.85))
-    width_warn = float(np.quantile(calib_interval.width, 0.5))
-    width_abstain = float(np.quantile(calib_interval.width, 0.85))
+    calib_residuals = np.abs(calib_df[schema.target].to_numpy() - calib_pred.mean)
+    calibrated_score_specs: dict[str, tuple[np.ndarray, np.ndarray]] = {}
+    comparator_specs = {
+        "ensemble_sd_risk": (
+            pd.DataFrame({"ensemble_sd": calib_pred.std}),
+            pd.DataFrame({"ensemble_sd": test_pred.std}),
+        ),
+        "input_space_knn_plus_sd_risk": (
+            pd.DataFrame(
+                {
+                    "input_space_knn": calib_ad.distance_to_model,
+                    "ensemble_sd": calib_pred.std,
+                }
+            ),
+            pd.DataFrame(
+                {
+                    "input_space_knn": test_ad.distance_to_model,
+                    "ensemble_sd": test_pred.std,
+                }
+            ),
+        ),
+        "equal_block_knn_plus_sd_risk": (
+            pd.DataFrame(
+                {
+                    "equal_block_knn": calib_ad.equal_block_distance,
+                    "ensemble_sd": calib_pred.std,
+                }
+            ),
+            pd.DataFrame(
+                {
+                    "equal_block_knn": test_ad.equal_block_distance,
+                    "ensemble_sd": test_pred.std,
+                }
+            ),
+        ),
+        "generic_support_plus_sd_risk": (
+            pd.DataFrame(
+                {
+                    "similarity_novelty": calib_ad.similarity,
+                    "equal_block_knn": calib_ad.equal_block_distance,
+                    "ensemble_sd": calib_pred.std,
+                }
+            ),
+            pd.DataFrame(
+                {
+                    "similarity_novelty": test_ad.similarity,
+                    "equal_block_knn": test_ad.equal_block_distance,
+                    "ensemble_sd": test_pred.std,
+                }
+            ),
+        ),
+    }
+    for name, (calib_features, test_features) in comparator_specs.items():
+        risk_scorer = CalibrationRiskScorer().fit(calib_features, calib_residuals)
+        calibrated_score_specs[name] = (
+            risk_scorer.predict(calib_features),
+            risk_scorer.predict(test_features),
+        )
+
+    component_axes = {
+        "chemical": ["d_chem_knn", "d_chem_mahal"],
+        "biological": ["d_species_knn", "d_species_tax"],
+        "contextual": ["d_context"],
+        "bioactivity": ["d_mech"],
+        "uncertainty": ["u_model"],
+    }
+    for axis, columns in component_axes.items():
+        risk_scorer = CalibrationRiskScorer().fit(
+            calib_components.drop(columns=columns),
+            calib_residuals,
+        )
+        calibrated_score_specs[f"ecoood_minus_{axis}"] = (
+            risk_scorer.predict(calib_components.drop(columns=columns)),
+            risk_scorer.predict(test_component_frame.drop(columns=columns)),
+        )
+
+    for quantile in config.high_error_quantile_sensitivity:
+        if np.isclose(quantile, config.high_error_quantile):
+            continue
+        sensitivity_scorer = EcoOODScorer(schema=schema).fit(train_df, train_bundle)
+        sensitivity_scorer.fit_meta(
+            calib_components,
+            residuals=calib_residuals,
+            high_error_quantile=quantile,
+        )
+        calibrated_score_specs[f"ecoood_q{int(round(quantile * 100)):02d}"] = (
+            sensitivity_scorer.score_components(calib_components),
+            sensitivity_scorer.score_components(test_component_frame),
+        )
+
+    endpoint_balanced_scorer = EcoOODScorer(schema=schema).fit(train_df, train_bundle)
+    endpoint_balanced_scorer.fit_meta(
+        calib_components,
+        residuals=calib_residuals,
+        high_error_quantile=config.high_error_quantile,
+        groups=calib_df[schema.endpoint],
+        groupwise_labels=True,
+        balance_groups=True,
+    )
+    calibrated_score_specs["ecoood_endpoint_balanced"] = (
+        endpoint_balanced_scorer.score_components(calib_components),
+        endpoint_balanced_scorer.score_components(test_component_frame),
+    )
+
+    score_warn = float(np.quantile(calib_ecoood_score, 0.5))
+    score_abstain = float(np.quantile(calib_ecoood_score, 0.85))
     decisions = decision_labels(
         test_components.ecoood_score,
-        test_interval.width,
+        None,
         score_warn_threshold=score_warn,
         score_abstain_threshold=score_abstain,
-        width_warn_threshold=width_warn,
-        width_abstain_threshold=width_abstain,
     )
 
     y_test = test_df[schema.target].to_numpy()
     known_ood = _known_ood_labels(test_df, split_indices, schema)
+    calibration_high_error = (
+        calib_residuals >= float(scorer.high_error_threshold_)
+    )
+    calibration_endpoint_metrics: dict[str, int] = {}
+    for endpoint in sorted(calib_df[schema.endpoint].dropna().astype(str).unique()):
+        endpoint_mask = calib_df[schema.endpoint].astype(str).eq(endpoint).to_numpy()
+        token = _metric_token(endpoint)
+        calibration_endpoint_metrics[f"calibration_{token}_n"] = int(endpoint_mask.sum())
+        calibration_endpoint_metrics[f"calibration_{token}_high_error_n"] = int(
+            np.sum(calibration_high_error & endpoint_mask)
+        )
+
     metrics = {
         "split": config.split,
         "model": config.model_name,
+        "permuted_training_targets": bool(config.permute_training_targets),
         **regression_metrics(y_test, test_pred.mean),
         **interval_metrics(
             y_test,
@@ -138,6 +286,16 @@ def run_single_experiment(
             uncertainty=test_pred.std,
             novelty=test_components.ecoood_score,
         ),
+        **{
+            f"endpoint_conditional_{key}": value
+            for key, value in interval_metrics(
+                y_test,
+                endpoint_test_interval.lower,
+                endpoint_test_interval.upper,
+                uncertainty=test_pred.std,
+                novelty=test_components.ecoood_score,
+            ).items()
+        },
         **ood_metrics(
             y_test,
             test_pred.mean,
@@ -151,6 +309,22 @@ def run_single_experiment(
         "predict_fraction": float(np.mean(decisions == "predict")),
         "warn_fraction": float(np.mean(decisions == "warn")),
         "abstain_fraction": float(np.mean(decisions == "abstain")),
+        "conformal_qhat": float(conformal.qhat),
+        "conformal_calibration_n": int(conformal.n_calibration_),
+        "conformal_quantile_rank": int(conformal.quantile_rank_),
+        "endpoint_conformal_supported_groups": int(len(endpoint_conformal.group_qhat_)),
+        "n_model_features": int(train_bundle.full.shape[1]),
+        "n_fingerprint_features": int(train_bundle.fingerprint.shape[1]),
+        "n_descriptor_features": int(train_bundle.descriptor.shape[1]),
+        "n_species_features": int(train_bundle.species.shape[1]),
+        "n_context_features": int(train_bundle.context.shape[1]),
+        "n_bioactivity_proxy_features": int(train_bundle.mechanism.shape[1]),
+        **{
+            f"equal_block_rms_{name}": float(value)
+            for name, value in ad_scorer.equal_block_scale_by_name.items()
+        },
+        **calibration_endpoint_metrics,
+        **{f"ecoood_{key}": value for key, value in scorer.diagnostics().items()},
     }
 
     predictions = test_df.copy()
@@ -160,34 +334,47 @@ def run_single_experiment(
     predictions["interval_lower"] = test_interval.lower
     predictions["interval_upper"] = test_interval.upper
     predictions["interval_width"] = test_interval.width
+    predictions["endpoint_interval_lower"] = endpoint_test_interval.lower
+    predictions["endpoint_interval_upper"] = endpoint_test_interval.upper
+    predictions["endpoint_interval_width"] = endpoint_test_interval.width
     predictions["ecoood_score"] = test_components.ecoood_score
     predictions["d_chem"] = test_components.chemical
     predictions["d_species"] = test_components.species
     predictions["d_context"] = test_components.context
     predictions["d_mech"] = test_components.mechanism
+    for column in test_component_frame.columns:
+        predictions[column] = test_component_frame[column].to_numpy()
     predictions["decision"] = decisions
     predictions["known_ood"] = known_ood
     predictions["ad_similarity"] = test_ad.similarity
     predictions["ad_leverage"] = test_ad.leverage
     predictions["ad_range"] = test_ad.descriptor_range
     predictions["ad_distance_to_model"] = test_ad.distance_to_model
+    predictions["ad_equal_block_distance"] = test_ad.equal_block_distance
     predictions["uncertainty_interval_width_score"] = test_ad.interval_width
     predictions["ood_mahalanobis"] = test_ad.mahalanobis
     predictions["ood_isolation_forest"] = test_ad.isolation_forest
     predictions["ood_lof"] = test_ad.lof
+    for name, (_, test_score) in calibrated_score_specs.items():
+        predictions[name] = test_score
 
     score_rows = []
     score_specs = {
-        "ecoood": (calib_components_pred.ecoood_score, test_components.ecoood_score),
+        "ecoood": (calib_ecoood_score, test_components.ecoood_score),
         "ad_similarity": (calib_ad.similarity, test_ad.similarity),
         "ad_leverage": (calib_ad.leverage, test_ad.leverage),
         "ad_range": (calib_ad.descriptor_range, test_ad.descriptor_range),
         "ad_distance_to_model": (calib_ad.distance_to_model, test_ad.distance_to_model),
+        "ad_equal_block_distance": (
+            calib_ad.equal_block_distance,
+            test_ad.equal_block_distance,
+        ),
         "uncertainty_interval_width": (calib_ad.interval_width, test_ad.interval_width),
         "ood_mahalanobis": (calib_ad.mahalanobis, test_ad.mahalanobis),
         "ood_isolation_forest": (calib_ad.isolation_forest, test_ad.isolation_forest),
         "ood_lof": (calib_ad.lof, test_ad.lof),
     }
+    score_specs.update(calibrated_score_specs)
     for method, (calib_score, test_score) in score_specs.items():
         row = {
             "split": config.split,
@@ -202,6 +389,8 @@ def run_single_experiment(
                 ood_scores=test_score if np.any(split_indices.test_is_ood) else np.array([]),
             ),
         }
+        if method == "ecoood":
+            row.update({f"meta_{key}": value for key, value in scorer.diagnostics().items()})
         score_rows.append(row)
     score_summary = pd.DataFrame(score_rows)
 
@@ -222,6 +411,7 @@ def run_benchmark(
     alpha: float = 0.1,
     seed: int = 42,
     n_members: int = 5,
+    ensemble_n_jobs: int = -1,
 ) -> pd.DataFrame:
     rows: list[dict[str, float]] = []
     score_rows: list[pd.DataFrame] = []
@@ -234,6 +424,7 @@ def run_benchmark(
                 seed=seed,
                 n_members=n_members,
                 output_dir=output_dir,
+                ensemble_n_jobs=ensemble_n_jobs,
             )
             metrics, _, score_summary = run_single_experiment(df, config=config, schema=schema)
             rows.append(metrics)

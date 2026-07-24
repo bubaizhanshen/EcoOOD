@@ -4,7 +4,11 @@ import pytest
 
 import pandas as pd
 
-from scripts.build_ecotox_dataset import clean_concentration_unit, concentration_to_molar, hard_ood_flag
+from scripts.build_ecotox_dataset import (
+    clean_concentration_unit,
+    concentration_to_molar,
+    deterministic_rejection_flag,
+)
 
 
 @pytest.mark.parametrize(
@@ -31,7 +35,7 @@ def test_qualified_mass_units_are_not_converted_as_parent_compound(unit: str) ->
     assert concentration_to_molar(1.0, unit, 100.0) is None
 
 
-def test_unparseable_smiles_is_explicit_hard_ood() -> None:
+def test_unparseable_smiles_triggers_deterministic_rejection() -> None:
     row = pd.Series(
         {
             "chemical_class": "unclassified",
@@ -39,4 +43,4 @@ def test_unparseable_smiles_is_explicit_hard_ood() -> None:
             "smiles": "[Na+].[Na+].F[Si--](F)(F)(F)(F)F",
         }
     )
-    assert hard_ood_flag(row)
+    assert deterministic_rejection_flag(row)

@@ -29,7 +29,7 @@ ECOTOX_MEMBERS = {
 }
 
 PUBCHEM_FIELDS = ["ConnectivitySMILES", "MolecularWeight", "XLogP", "InChIKey"]
-HARD_OOD_GROUP_KEYWORDS = {
+DETERMINISTIC_REJECTION_GROUP_KEYWORDS = {
     "arsenic",
     "cadmium",
     "chromium",
@@ -267,10 +267,10 @@ def enrich_structures(
     return cache[CACHE_COLUMNS].drop_duplicates("cas_number", keep="last")
 
 
-def hard_ood_flag(row: pd.Series) -> bool:
+def deterministic_rejection_flag(row: pd.Series) -> bool:
     group = str(row.get("chemical_class", "")).strip().lower()
     name = str(row.get("chemical_name", "")).lower()
-    if any(keyword in group for keyword in HARD_OOD_GROUP_KEYWORDS):
+    if any(keyword in group for keyword in DETERMINISTIC_REJECTION_GROUP_KEYWORDS):
         return True
     if any(token in name for token in ["mixture", "unknown", "inorganic", "organomet", "salt"]):
         return True
@@ -432,7 +432,9 @@ def build_dataset(
     dataset["class_name"] = dataset["class"]
     dataset["chemical_class"] = dataset["chemical_class"].fillna("unclassified")
     dataset["species_group"] = dataset["species_group"].fillna("unknown")
-    dataset["is_hard_ood"] = dataset.apply(hard_ood_flag, axis=1)
+    # The persisted column name is retained for compatibility with the frozen
+    # analysis table; it is an audit flag and is never a scoreable split.
+    dataset["is_hard_ood"] = dataset.apply(deterministic_rejection_flag, axis=1)
     dataset["known_ood"] = dataset["is_hard_ood"]
     mech_feature_cols = sorted(column for column in dataset.columns if column.startswith("mech_"))
 

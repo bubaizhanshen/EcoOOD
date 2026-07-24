@@ -10,7 +10,15 @@ import pandas as pd
 def make_demo_dataset(n: int, seed: int) -> pd.DataFrame:
     rng = np.random.default_rng(seed)
     endpoints = np.array(["fish_96h_lc50", "daphnia_48h_ec50", "algae_72h_ec50"])
-    chem_classes = np.array(["pharma", "pfas", "surfactant", "flame_retardant", "uv_filter"])
+    chem_classes = np.array(
+        [
+            "Pharmaceutical Personal Care Products (PPCPs)",
+            "Per- and Polyfluoroalkyl Substances (PFAS)",
+            "Conazoles",
+            "Neonicotinoids",
+            "Strobins",
+        ]
+    )
     species = {
         "fish_96h_lc50": ("Oncorhynchus mykiss", "Pimephales promelas", "Danio rerio"),
         "daphnia_48h_ec50": ("Daphnia magna", "Ceriodaphnia dubia", "Moina macrocopa"),
@@ -57,15 +65,20 @@ def make_demo_dataset(n: int, seed: int) -> pd.DataFrame:
         year = int(rng.integers(1995, 2025))
         mech_signal = rng.normal(0, 1)
         class_offset = {
-            "pharma": -0.3,
-            "pfas": 0.5,
-            "surfactant": 0.8,
-            "flame_retardant": 0.2,
-            "uv_filter": -0.1,
+            "Pharmaceutical Personal Care Products (PPCPs)": -0.3,
+            "Per- and Polyfluoroalkyl Substances (PFAS)": 0.5,
+            "Conazoles": 0.8,
+            "Neonicotinoids": 0.2,
+            "Strobins": -0.1,
         }[chem_class]
         species_offset = 0.4 if "Daphnia" in species_name else -0.2 if "Oncorhynchus" in species_name else 0.1
         context_shift = 0.3 if year >= 2020 else 0.0
-        hard_ood = chem_class == "pfas" and year >= 2022 and endpoint == "fish_96h_lc50"
+        pfas_class = "Per- and Polyfluoroalkyl Substances (PFAS)"
+        deterministic_rejection = (
+            chem_class == pfas_class
+            and year >= 2022
+            and endpoint == "fish_96h_lc50"
+        )
         target = (
             -2.0
             + 0.25 * logp
@@ -75,7 +88,7 @@ def make_demo_dataset(n: int, seed: int) -> pd.DataFrame:
             + class_offset
             + species_offset
             + context_shift
-            + rng.normal(0, 0.35 if not hard_ood else 0.7)
+            + rng.normal(0, 0.35 if not deterministic_rejection else 0.7)
         )
         rows.append(
             {
@@ -110,8 +123,12 @@ def make_demo_dataset(n: int, seed: int) -> pd.DataFrame:
                 "mech_hit_rate": mech_signal,
                 "mech_stress_response": rng.normal(0, 1),
                 "ctx_lab_id": float(rng.integers(1, 6)),
-                "is_hard_ood": hard_ood,
-                "known_ood": hard_ood or year >= 2020 or chem_class == "pfas",
+                "is_hard_ood": deterministic_rejection,
+                "known_ood": (
+                    deterministic_rejection
+                    or year >= 2020
+                    or chem_class == pfas_class
+                ),
             }
         )
     return pd.DataFrame(rows)
