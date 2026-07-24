@@ -9,7 +9,7 @@ split assignments, and compact prediction outputs are available in the
 
 - `processed/demo_ecoood.csv`: synthetic benchmark example
 - `feature_manifest.csv`: field names, roles, cardinalities, and missingness
-  rates for the frozen integrity-audited benchmark snapshot (4,942 records;
+  rates for the frozen audited benchmark snapshot (4,942 records;
   841 chemicals)
 - `raw/`: provider downloads created by the source-specific fetch scripts
 - `processed/`: locally built benchmark tables and feature caches

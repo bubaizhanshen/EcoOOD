@@ -35,7 +35,7 @@ def test_qualified_mass_units_are_not_converted_as_parent_compound(unit: str) ->
     assert concentration_to_molar(1.0, unit, 100.0) is None
 
 
-def test_unparseable_smiles_triggers_deterministic_rejection() -> None:
+def test_carbon_free_inorganic_structure_triggers_deterministic_rejection() -> None:
     row = pd.Series(
         {
             "chemical_class": "unclassified",

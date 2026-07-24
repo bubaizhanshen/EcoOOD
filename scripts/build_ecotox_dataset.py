@@ -278,8 +278,11 @@ def deterministic_rejection_flag(row: pd.Series) -> bool:
     if not smiles:
         return True
     with rdBase.BlockLogs():
-        if Chem.MolFromSmiles(smiles) is None:
-            return True
+        molecule = Chem.MolFromSmiles(smiles)
+    if molecule is None:
+        return True
+    if not any(atom.GetAtomicNum() == 6 for atom in molecule.GetAtoms()):
+        return True
     return False
 
 
