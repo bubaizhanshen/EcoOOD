@@ -41,7 +41,7 @@ tests/                  Unit and regression tests
 
 Generated benchmark outputs are stored locally under `outputs/`. The frozen
 analysis tables and compact prediction outputs are distributed through the
-[v0.2.0 analysis release](https://github.com/bubaizhanshen/EcoOOD/releases/tag/v0.2.0).
+[v0.2.1 analysis release](https://github.com/bubaizhanshen/EcoOOD/releases/tag/v0.2.1).
 
 ## Installation
 
@@ -103,6 +103,16 @@ Summarize fixed-workload outcomes:
 conda run -n ecoood python scripts/summarize_multiseed_screening.py \
   --input-root outputs/integrity_benchmark \
   --output-dir outputs/integrity_benchmark/aggregate
+```
+
+Generate the statistical audit tables, including paired comparisons with
+random review and the 15–35% review-workload sensitivity:
+
+```bash
+conda run -n ecoood python scripts/summarize_benchmark_audits.py \
+  --benchmark-root outputs/integrity_benchmark \
+  --output-dir outputs/integrity_benchmark/analysis_tables \
+  --bootstrap-replicates 2000
 ```
 
 Run input-feature and leakage controls:

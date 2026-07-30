@@ -313,6 +313,11 @@ def _workload_metrics(
     lower = classified["screening_action"].eq("lower_priority")
     baseline_fn = classified["baseline_false_negative"]
     rescued = classified["rescued_false_negative"]
+    high_concern_left_lower = classified["true_high_concern"] & lower
+    false_omission_rate = _safe_rate(
+        int(high_concern_left_lower.sum()),
+        int(lower.sum()),
+    )
     return {
         "seed": seed,
         "model": model,
@@ -321,13 +326,25 @@ def _workload_metrics(
         "review_burden": burden,
         "toxicity_cutoff": toxicity_cutoff,
         "review_count": int(classified["reviewed"].sum()),
-        "lower_priority_false_reassurance": _safe_rate(
-            int((classified["true_high_concern"] & lower).sum()),
-            int(lower.sum()),
+        "lower_priority_false_omission_rate": false_omission_rate,
+        # Backward-compatible alias retained for frozen v0.2.0 output readers.
+        "lower_priority_false_reassurance": false_omission_rate,
+        "lower_priority_queue_size": int(lower.sum()),
+        "high_concern_left_lower_priority_count": int(
+            high_concern_left_lower.sum()
+        ),
+        "high_concern_left_lower_priority_fraction": _safe_rate(
+            int(high_concern_left_lower.sum()),
+            int(classified["true_high_concern"].sum()),
         ),
         "baseline_false_negatives": int(baseline_fn.sum()),
         "rescued_false_negatives": int(rescued.sum()),
+        "rescued_baseline_misses": int(rescued.sum()),
         "rescued_false_negative_fraction": _safe_rate(
+            int(rescued.sum()),
+            int(baseline_fn.sum()),
+        ),
+        "rescued_baseline_miss_fraction": _safe_rate(
             int(rescued.sum()),
             int(baseline_fn.sum()),
         ),
@@ -363,6 +380,20 @@ def summarize_direct_rule(chemical_panel: pd.DataFrame) -> tuple[pd.DataFrame, p
         routed_low = frame["screening_action"].eq("lower_priority")
         baseline_fn = frame["baseline_false_negative"]
         rescued = frame["rescued_false_negative"]
+        baseline_high_concern_left_lower = (
+            frame["true_high_concern"] & baseline_low
+        )
+        routed_high_concern_left_lower = (
+            frame["true_high_concern"] & routed_low
+        )
+        baseline_false_omission_rate = _safe_rate(
+            int(baseline_high_concern_left_lower.sum()),
+            int(baseline_low.sum()),
+        )
+        routed_false_omission_rate = _safe_rate(
+            int(routed_high_concern_left_lower.sum()),
+            int(routed_low.sum()),
+        )
         row: dict[str, object] = {
             "seed": seed,
             "model": model,
@@ -370,15 +401,24 @@ def summarize_direct_rule(chemical_panel: pd.DataFrame) -> tuple[pd.DataFrame, p
             "n_chemical_split_cases": int(len(frame)),
             "toxicity_cutoff": toxicity_cutoff,
             "ecoood_cutoff": score_cutoff,
-            "baseline_false_reassurance": _safe_rate(
-                int((frame["true_high_concern"] & baseline_low).sum()), int(baseline_low.sum())
-            ),
-            "routed_false_reassurance": _safe_rate(
-                int((frame["true_high_concern"] & routed_low).sum()), int(routed_low.sum())
+            "baseline_false_omission_rate": baseline_false_omission_rate,
+            "routed_false_omission_rate": routed_false_omission_rate,
+            "baseline_false_reassurance": baseline_false_omission_rate,
+            "routed_false_reassurance": routed_false_omission_rate,
+            "baseline_lower_priority_queue_size": int(baseline_low.sum()),
+            "routed_lower_priority_queue_size": int(routed_low.sum()),
+            "routed_high_concern_left_lower_priority_fraction": _safe_rate(
+                int(routed_high_concern_left_lower.sum()),
+                int(frame["true_high_concern"].sum()),
             ),
             "baseline_false_negatives": int(baseline_fn.sum()),
             "rescued_false_negatives": int(rescued.sum()),
+            "rescued_baseline_misses": int(rescued.sum()),
             "rescued_false_negative_fraction": _safe_rate(int(rescued.sum()), int(baseline_fn.sum())),
+            "rescued_baseline_miss_fraction": _safe_rate(
+                int(rescued.sum()),
+                int(baseline_fn.sum()),
+            ),
         }
         for action in ACTION_ORDER:
             row[f"{action}_count"] = int(frame["screening_action"].eq(action).sum())
@@ -467,14 +507,21 @@ def summarize_fixed_workload(
             lower_priority = (~pred_high)[None, :] & ~reviewed_matrix
             rescued = baseline_fn[None, :] & reviewed_matrix
             lower_counts = lower_priority.sum(axis=1)
-            false_reassurance_counts = (
+            false_omission_counts = (
                 true_high[None, :] & lower_priority
             ).sum(axis=1)
-            false_reassurance = np.divide(
-                false_reassurance_counts,
+            false_omission_rate = np.divide(
+                false_omission_counts,
                 lower_counts,
                 out=np.full(random_replicates, np.nan, dtype=float),
                 where=lower_counts > 0,
+            )
+            high_concern_count = int(true_high.sum())
+            high_concern_left_lower_fraction = np.divide(
+                false_omission_counts,
+                high_concern_count,
+                out=np.full(random_replicates, np.nan, dtype=float),
+                where=high_concern_count > 0,
             )
             baseline_fn_count = int(baseline_fn.sum())
             rescued_counts = rescued.sum(axis=1)
@@ -506,14 +553,35 @@ def summarize_fixed_workload(
                 "toxicity_cutoff": toxicity_cutoff,
                 "review_count": review_n,
                 "random_replicates": random_replicates,
+                "lower_priority_false_omission_rate": float(
+                    np.nanmean(false_omission_rate)
+                    if np.isfinite(false_omission_rate).any()
+                    else np.nan
+                ),
+                # Backward-compatible alias retained for frozen output readers.
                 "lower_priority_false_reassurance": float(
-                    np.nanmean(false_reassurance)
-                    if np.isfinite(false_reassurance).any()
+                    np.nanmean(false_omission_rate)
+                    if np.isfinite(false_omission_rate).any()
+                    else np.nan
+                ),
+                "lower_priority_queue_size": float(lower_counts.mean()),
+                "high_concern_left_lower_priority_count": float(
+                    false_omission_counts.mean()
+                ),
+                "high_concern_left_lower_priority_fraction": float(
+                    np.nanmean(high_concern_left_lower_fraction)
+                    if np.isfinite(high_concern_left_lower_fraction).any()
                     else np.nan
                 ),
                 "baseline_false_negatives": baseline_fn_count,
                 "rescued_false_negatives": float(rescued_counts.mean()),
+                "rescued_baseline_misses": float(rescued_counts.mean()),
                 "rescued_false_negative_fraction": float(
+                    np.nanmean(rescued_fraction)
+                    if np.isfinite(rescued_fraction).any()
+                    else np.nan
+                ),
+                "rescued_baseline_miss_fraction": float(
                     np.nanmean(rescued_fraction)
                     if np.isfinite(rescued_fraction).any()
                     else np.nan

@@ -32,6 +32,12 @@ DEPLOYMENT_SPLITS = [
     "species",
     "chemical_class",
 ]
+LARGE_DEPLOYMENT_SPLITS = [
+    "chemical_random",
+    "scaffold",
+    "temporal",
+    "species",
+]
 PRIMARY_WORKLOAD_METHODS = [
     "Random review",
     "EcoOOD",
@@ -173,6 +179,7 @@ def hierarchical_workload_ci(
         subset["method"].isin(PRIMARY_WORKLOAD_METHODS)
     ].copy()
     metrics = [
+        "lower_priority_false_omission_rate",
         "lower_priority_false_reassurance",
         "rescued_false_negative_fraction",
         "rescued_per_100_reviews",
@@ -218,7 +225,7 @@ def hierarchical_workload_ci(
                         sampled[:, 3] = reviewed
                     sample_metrics = _classified_workload_array_values(sampled)
                     fractions.append(
-                        sample_metrics["lower_priority_false_reassurance"]
+                        sample_metrics["lower_priority_false_omission_rate"]
                     )
                     rescued_fraction.append(
                         sample_metrics["rescued_false_negative_fraction"]
@@ -228,6 +235,9 @@ def hierarchical_workload_ci(
                     )
                 replicates.append(
                     {
+                        "lower_priority_false_omission_rate": _safe_nanmean(
+                            fractions
+                        ),
                         "lower_priority_false_reassurance": _safe_nanmean(fractions),
                         "rescued_false_negative_fraction": _safe_nanmean(rescued_fraction),
                         "rescued_per_100_reviews": _safe_nanmean(rescued_per_100),
@@ -267,13 +277,26 @@ def _classified_workload_array_values(values: np.ndarray) -> dict[str, float]:
     baseline_false_negative = values[:, 1]
     rescued = values[:, 2]
     reviewed = values[:, 3]
-    false_reassurance = baseline_false_negative & lower_priority
+    true_high_concern = values[:, 4]
+    high_concern_left_lower_priority = true_high_concern & lower_priority
     n_baseline = int(baseline_false_negative.sum())
     n_review = int(reviewed.sum())
+    false_omission_rate = (
+        float(high_concern_left_lower_priority.sum() / lower_priority.sum())
+        if lower_priority.sum()
+        else np.nan
+    )
     return {
-        "lower_priority_false_reassurance": (
-            float(false_reassurance.sum() / lower_priority.sum())
-            if lower_priority.sum()
+        "lower_priority_false_omission_rate": false_omission_rate,
+        # Backward-compatible alias for the frozen v0.2.0 tables.
+        "lower_priority_false_reassurance": false_omission_rate,
+        "lower_priority_queue_size": float(lower_priority.sum()),
+        "high_concern_left_lower_priority_fraction": (
+            float(
+                high_concern_left_lower_priority.sum()
+                / true_high_concern.sum()
+            )
+            if true_high_concern.sum()
             else np.nan
         ),
         "rescued_false_negative_fraction": (
@@ -287,6 +310,25 @@ def _classified_workload_array_values(values: np.ndarray) -> dict[str, float]:
 
 def _classified_workload_values(frame: pd.DataFrame) -> dict[str, float]:
     return _classified_workload_array_values(_classified_workload_array(frame))
+
+
+def _redraw_random_review(
+    values: np.ndarray,
+    *,
+    rng: np.random.Generator,
+    review_burden: float,
+) -> np.ndarray:
+    """Redraw random-review assignments within one bootstrap sample."""
+    randomized = values.copy()
+    review_n = max(1, int(round(review_burden * len(randomized))))
+    reviewed = np.zeros(len(randomized), dtype=bool)
+    reviewed[
+        rng.choice(len(randomized), size=review_n, replace=False)
+    ] = True
+    randomized[:, 0] = (~randomized[:, 5]) & ~reviewed
+    randomized[:, 2] = randomized[:, 1] & reviewed
+    randomized[:, 3] = reviewed
+    return randomized
 
 
 def paired_hierarchical_workload_delta_ci(
@@ -305,6 +347,7 @@ def paired_hierarchical_workload_delta_ci(
     subset = subset.loc[subset["method"].isin(PRIMARY_WORKLOAD_METHODS)].copy()
     rng = np.random.default_rng(random_state)
     metrics = [
+        "lower_priority_false_omission_rate",
         "lower_priority_false_reassurance",
         "rescued_false_negative_fraction",
         "rescued_per_100_reviews",
@@ -358,11 +401,25 @@ def paired_hierarchical_workload_delta_ci(
                         len(reference),
                         size=len(reference),
                     )
+                    reference_sample = reference[sampled]
+                    comparator_sample = comparator[sampled]
+                    if reference_method == "Random review":
+                        reference_sample = _redraw_random_review(
+                            reference_sample,
+                            rng=rng,
+                            review_burden=0.25,
+                        )
+                    if method == "Random review":
+                        comparator_sample = _redraw_random_review(
+                            comparator_sample,
+                            rng=rng,
+                            review_burden=0.25,
+                        )
                     reference_values = _classified_workload_array_values(
-                        reference[sampled]
+                        reference_sample
                     )
                     comparator_values = _classified_workload_array_values(
-                        comparator[sampled]
+                        comparator_sample
                     )
                     for metric in metrics:
                         seed_deltas[metric].append(
@@ -388,6 +445,63 @@ def paired_hierarchical_workload_delta_ci(
     return pd.DataFrame(rows)
 
 
+def review_burden_macro_sensitivity(review: pd.DataFrame) -> pd.DataFrame:
+    """Macro-average workload outcomes across the four larger shift settings."""
+    subset = review.loc[
+        (review["model"] == "lightgbm")
+        & review["split"].isin(LARGE_DEPLOYMENT_SPLITS)
+        & review["method"].isin(PRIMARY_WORKLOAD_METHODS)
+        & review["review_burden"].isin([0.15, 0.20, 0.25, 0.30, 0.35]),
+    ].copy()
+    false_omission_column = (
+        "lower_priority_false_omission_rate"
+        if "lower_priority_false_omission_rate" in subset.columns
+        else "lower_priority_false_reassurance"
+    )
+    split_means = (
+        subset.groupby(
+            ["split", "method", "review_burden"],
+            as_index=False,
+        )[
+            [
+                false_omission_column,
+                "rescued_per_100_reviews",
+            ]
+        ]
+        .mean()
+        .rename(
+            columns={
+                false_omission_column: "lower_priority_false_omission_rate",
+            }
+        )
+    )
+    return (
+        split_means.groupby(
+            ["method", "review_burden"],
+            as_index=False,
+        )
+        .agg(
+            lower_priority_false_omission_rate_mean=(
+                "lower_priority_false_omission_rate",
+                "mean",
+            ),
+            lower_priority_false_omission_rate_sd_across_settings=(
+                "lower_priority_false_omission_rate",
+                "std",
+            ),
+            rescued_per_100_reviews_mean=(
+                "rescued_per_100_reviews",
+                "mean",
+            ),
+            rescued_per_100_reviews_sd_across_settings=(
+                "rescued_per_100_reviews",
+                "std",
+            ),
+            n_settings=("split", "nunique"),
+        )
+    )
+
+
 def high_concern_threshold_sensitivity(classified: pd.DataFrame) -> pd.DataFrame:
     """Recalculate fixed-workload outcomes across relative prioritization cutoffs."""
     subset = classified.loc[
@@ -404,6 +518,11 @@ def high_concern_threshold_sensitivity(classified: pd.DataFrame) -> pd.DataFrame
             baseline_fn = true_high & ~pred_high
             lower = frame["screening_action"].eq("lower_priority")
             rescued = baseline_fn & frame["reviewed"]
+            false_omission_rate = (
+                float((true_high & lower).sum() / lower.sum())
+                if lower.any()
+                else np.nan
+            )
             rows.append(
                 {
                     "seed": seed,
@@ -411,8 +530,13 @@ def high_concern_threshold_sensitivity(classified: pd.DataFrame) -> pd.DataFrame
                     "method": method,
                     "high_concern_quantile": quantile,
                     "toxicity_cutoff": cutoff,
-                    "lower_priority_false_reassurance": (
-                        float((true_high & lower).sum() / lower.sum()) if lower.any() else np.nan
+                    "lower_priority_false_omission_rate": false_omission_rate,
+                    "lower_priority_false_reassurance": false_omission_rate,
+                    "lower_priority_queue_size": int(lower.sum()),
+                    "high_concern_left_lower_priority_fraction": (
+                        float((true_high & lower).sum() / true_high.sum())
+                        if true_high.any()
+                        else np.nan
                     ),
                     "rescued_false_negative_fraction": (
                         float(rescued.sum() / baseline_fn.sum()) if baseline_fn.any() else np.nan
@@ -422,7 +546,14 @@ def high_concern_threshold_sensitivity(classified: pd.DataFrame) -> pd.DataFrame
     return _mean_sd(
         pd.DataFrame(rows),
         ["split", "method", "high_concern_quantile"],
-        ["toxicity_cutoff", "lower_priority_false_reassurance", "rescued_false_negative_fraction"],
+        [
+            "toxicity_cutoff",
+            "lower_priority_false_omission_rate",
+            "lower_priority_false_reassurance",
+            "lower_priority_queue_size",
+            "high_concern_left_lower_priority_fraction",
+            "rescued_false_negative_fraction",
+        ],
     )
 
 
@@ -715,6 +846,32 @@ def main() -> None:
         reference_method="EcoOOD",
     ).to_csv(
         output / "fixed_workload_paired_delta_ci.csv",
+        index=False,
+    )
+    paired_hierarchical_workload_delta_ci(
+        classified.loc[
+            classified["method"].isin(
+                [*PRIMARY_WORKLOAD_METHODS, "Random review"]
+            )
+        ],
+        n_bootstrap=args.bootstrap_replicates,
+        random_state=20260731,
+        reference_method="Random review",
+    ).to_csv(
+        output / "fixed_workload_paired_delta_vs_random_ci.csv",
+        index=False,
+    )
+    review_all_seed_path = (
+        root / "aggregate" / "review_workload_endpoint_relative_all_seeds.csv"
+    )
+    if not review_all_seed_path.exists():
+        review_all_seed_path = (
+            root / "aggregate" / "review_workload_summary_all_seeds.csv"
+        )
+    review_burden_macro_sensitivity(
+        pd.read_csv(review_all_seed_path)
+    ).to_csv(
+        output / "fixed_workload_review_burden_sensitivity.csv",
         index=False,
     )
     pooled_classified = pd.read_csv(
